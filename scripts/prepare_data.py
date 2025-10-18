@@ -32,7 +32,7 @@ def prepare_rna_data(rna_path):
     
     # Sort by gene_name before grouping
     df_expressions_sorted = df_expressions.sort_values(by='gene_name')
-    
+    df_expressions_sorted = df_expressions_sorted.drop_duplicates(subset=['case_barcode', 'gene_name'])
     # Group by case_barcode and aggregate tpm_unstranded into a list
     grouped_expressions_df = df_expressions_sorted.groupby('case_barcode')['tpm_unstranded'].apply(list).reset_index()
     
