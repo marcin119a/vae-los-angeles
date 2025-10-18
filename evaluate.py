@@ -12,14 +12,27 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from scipy.stats import pearsonr
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 from src.config import Config
 from src.models import MultiModalVAE
 from src.data import MultiModalDataset
 
 
+def get_run_id():
+    """Get the run ID from latest training or use default"""
+    if os.path.exists('latest_run_id.txt'):
+        with open('latest_run_id.txt', 'r') as f:
+            return f.read().strip()
+    else:
+        # Use default model name if no run_id file exists
+        return None
+
+
 def load_model_and_data():
     """Load trained model and validation data"""
+    run_id = get_run_id()
+    
     print("Loading processed data...")
     merged_df = pd.read_pickle('data/processed_data.pkl')
     
@@ -44,7 +57,13 @@ def load_model_and_data():
     )
     
     # Load model
-    print(f"Loading model from {Config.CHECKPOINT_DIR}/{Config.BEST_MODEL_NAME}...")
+    if run_id:
+        model_filename = f'best_multivae_{run_id}.pt'
+        print(f"Loading model from run: {run_id}")
+    else:
+        model_filename = Config.BEST_MODEL_NAME
+        print(f"Loading default model: {model_filename}")
+    
     model = MultiModalVAE(
         Config.INPUT_DIM_A, 
         Config.INPUT_DIM_B, 
@@ -52,11 +71,11 @@ def load_model_and_data():
         Config.LATENT_DIM
     ).to(Config.DEVICE)
     
-    model_path = os.path.join(Config.CHECKPOINT_DIR, Config.BEST_MODEL_NAME)
+    model_path = os.path.join(Config.CHECKPOINT_DIR, model_filename)
     model.load_state_dict(torch.load(model_path))
     model.eval()
     
-    return model, val_dataloader
+    return model, val_dataloader, run_id
 
 
 def reconstruct_all_samples(model, dataloader):
@@ -124,11 +143,13 @@ def compute_metrics(orig, recon, modality_name):
     }
 
 
-def plot_reconstruction_examples(orig_rna, recon_rna, orig_beta, recon_beta, n_examples=3):
+def plot_reconstruction_examples(orig_rna, recon_rna, orig_beta, recon_beta, run_id, n_examples=3):
     """Plot example reconstructions"""
     print(f"\nGenerating reconstruction plots ({n_examples} examples)...")
     
     indices = np.random.choice(len(orig_rna), n_examples, replace=False)
+    
+    run_suffix = f"_{run_id}" if run_id else ""
     
     for idx_num, idx in enumerate(indices):
         plt.figure(figsize=(12, 4))
@@ -154,15 +175,17 @@ def plot_reconstruction_examples(orig_rna, recon_rna, orig_beta, recon_beta, n_e
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(f'plots/reconstruction_example_{idx_num+1}.png', dpi=300, bbox_inches='tight')
+        plt.savefig(f'plots/reconstruction_example_{idx_num+1}{run_suffix}.png', dpi=300, bbox_inches='tight')
         plt.close()
     
     print(f"Saved {n_examples} reconstruction examples to plots/")
 
 
-def plot_correlation_distributions(metrics_rna, metrics_beta):
+def plot_correlation_distributions(metrics_rna, metrics_beta, run_id):
     """Plot Pearson correlation distributions"""
     print("\nGenerating correlation distribution plots...")
+    
+    run_suffix = f"_{run_id}" if run_id else ""
     
     plt.figure(figsize=(12, 5))
     
@@ -211,10 +234,11 @@ def plot_correlation_distributions(metrics_rna, metrics_beta):
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('plots/correlation_distributions.png', dpi=300, bbox_inches='tight')
+    filename = f'plots/correlation_distributions{run_suffix}.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print("Saved correlation distribution plots to plots/correlation_distributions.png")
+    print(f"Saved correlation distribution plots to {filename}")
 
 
 def print_results(metrics_rna, metrics_beta):
@@ -238,9 +262,12 @@ def print_results(metrics_rna, metrics_beta):
     print("\n" + "="*60)
 
 
-def save_results(metrics_rna, metrics_beta):
+def save_results(metrics_rna, metrics_beta, run_id):
     """Save evaluation results to file"""
+    run_suffix = f"_{run_id}" if run_id else ""
+    
     results = {
+        'run_id': run_id if run_id else 'default',
         'rna_from_dna': {
             'mse': float(metrics_rna['mse']),
             'mae': float(metrics_rna['mae']),
@@ -256,10 +283,11 @@ def save_results(metrics_rna, metrics_beta):
     }
     
     import json
-    with open('plots/evaluation_results.json', 'w') as f:
+    filename = f'plots/evaluation_results{run_suffix}.json'
+    with open(filename, 'w') as f:
         json.dump(results, f, indent=2)
     
-    print("\nResults saved to plots/evaluation_results.json")
+    print(f"\nResults saved to {filename}")
 
 
 def main():
@@ -268,7 +296,7 @@ def main():
     os.makedirs('plots', exist_ok=True)
     
     # Load model and data
-    model, val_dataloader = load_model_and_data()
+    model, val_dataloader, run_id = load_model_and_data()
     
     # Reconstruct all samples
     orig_rna, recon_rna, orig_beta, recon_beta = reconstruct_all_samples(
@@ -282,12 +310,12 @@ def main():
     metrics_beta = compute_metrics(orig_beta, recon_beta, "DNA from RNA")
     
     # Generate plots
-    plot_reconstruction_examples(orig_rna, recon_rna, orig_beta, recon_beta, n_examples=3)
-    plot_correlation_distributions(metrics_rna, metrics_beta)
+    plot_reconstruction_examples(orig_rna, recon_rna, orig_beta, recon_beta, run_id, n_examples=3)
+    plot_correlation_distributions(metrics_rna, metrics_beta, run_id)
     
     # Print and save results
     print_results(metrics_rna, metrics_beta)
-    save_results(metrics_rna, metrics_beta)
+    save_results(metrics_rna, metrics_beta, run_id)
     
     print("\nEvaluation complete! All results saved to plots/")
 

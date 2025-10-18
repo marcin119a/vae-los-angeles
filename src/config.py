@@ -8,7 +8,7 @@ class Config:
     """Training and model configuration"""
     
     # Model architecture
-    INPUT_DIM_A = 782  # RNA expression dimension
+    INPUT_DIM_A = 1180  # RNA expression dimension
     INPUT_DIM_B = 572  # DNA methylation dimension
     LATENT_DIM = 20    # Latent space dimension
     

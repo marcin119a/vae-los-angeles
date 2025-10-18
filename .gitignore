@@ -56,6 +56,7 @@ checkpoints/
 plots/
 logs/
 *.log
+latest_run_id.txt
 
 # Kaggle
 .kaggle/

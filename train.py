@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 from src.config import Config
 from src.models import MultiModalVAE
@@ -132,7 +133,7 @@ def validate(model, dataloader, epoch):
     return avg_val_loss
 
 
-def plot_losses(train_losses, val_losses):
+def plot_losses(train_losses, val_losses, run_id):
     """Plot training and validation losses"""
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses, label="Train Loss")
@@ -142,13 +143,18 @@ def plot_losses(train_losses, val_losses):
     plt.ylabel("Loss")
     plt.legend()
     plt.grid(True)
-    plt.savefig('plots/training_losses.png', dpi=300, bbox_inches='tight')
+    filename = f'plots/training_losses_{run_id}.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close()
-    print("Loss plot saved to plots/training_losses.png")
+    print(f"Loss plot saved to {filename}")
 
 
 def main():
     """Main training loop"""
+    # Generate unique run ID
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    print(f"Starting training run: {run_id}")
+    
     # Setup
     setup_directories()
     
@@ -214,7 +220,7 @@ def main():
             trigger = 0
             
             # Save best model
-            model_path = os.path.join(Config.CHECKPOINT_DIR, Config.BEST_MODEL_NAME)
+            model_path = os.path.join(Config.CHECKPOINT_DIR, f'best_multivae_{run_id}.pt')
             torch.save(model.state_dict(), model_path)
             print(f"✓ Best model saved (val_loss: {avg_val_loss:.2f})")
         else:
@@ -225,12 +231,17 @@ def main():
     
     # Plot losses
     print("\nGenerating loss plots...")
-    plot_losses(train_losses, val_losses)
+    plot_losses(train_losses, val_losses, run_id)
+    
+    # Save final model path for evaluation
+    with open('latest_run_id.txt', 'w') as f:
+        f.write(run_id)
     
     print("\n" + "="*50)
     print("Training complete!")
+    print(f"Run ID: {run_id}")
     print(f"Best validation loss: {best_val_loss:.2f}")
-    print(f"Best model saved to: {os.path.join(Config.CHECKPOINT_DIR, Config.BEST_MODEL_NAME)}")
+    print(f"Best model saved to: {os.path.join(Config.CHECKPOINT_DIR, f'best_multivae_{run_id}.pt')}")
     print("="*50)
 
 

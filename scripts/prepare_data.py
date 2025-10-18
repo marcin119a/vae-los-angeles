@@ -2,11 +2,15 @@
 Script to download and prepare data from Kaggle
 """
 import os
+import sys
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 import numpy as np
 import kagglehub
 from sklearn.preprocessing import LabelEncoder
-
+from src.config import Config
 
 def download_datasets():
     """Download datasets from Kaggle"""
@@ -24,7 +28,7 @@ def download_datasets():
 def prepare_rna_data(rna_path):
     """Prepare RNA expression data"""
     print("\nPreparing RNA expression data...")
-    df_expressions = pd.read_parquet(f'{rna_path}/expression (1).parquet')
+    df_expressions = pd.read_parquet(f'{rna_path}/expression_onko_db.parquet')
     
     # Sort by gene_name before grouping
     df_expressions_sorted = df_expressions.sort_values(by='gene_name')
@@ -32,9 +36,9 @@ def prepare_rna_data(rna_path):
     # Group by case_barcode and aggregate tpm_unstranded into a list
     grouped_expressions_df = df_expressions_sorted.groupby('case_barcode')['tpm_unstranded'].apply(list).reset_index()
     
-    # Filter to keep only rows where the list length is 782
+    # Filter to keep only rows where the list length is Config.INPUT_DIM_A
     filtered_grouped_expressions_df = grouped_expressions_df[
-        grouped_expressions_df['tpm_unstranded'].apply(len) == 782
+        grouped_expressions_df['tpm_unstranded'].apply(len) == Config.INPUT_DIM_A
     ]
     
     print(f"RNA data shape: {filtered_grouped_expressions_df.shape}")
