@@ -21,8 +21,12 @@ from compare_vae_vs_mean import load_model_and_data
 
 def get_data():
     """Loads and preprocesses data."""
-    print("Loading data...")
-    merged_df = pd.read_pickle('data/processed_data.pkl')
+    print("Loading data for downstream task from VAE's validation set...")
+    try:
+        merged_df = pd.read_pickle('data/val_data.pkl')
+    except FileNotFoundError:
+        print("Error: val_data.pkl not found. Please run train.py first to generate the data splits.")
+        exit()
     with open('data/label_encoder.pkl', 'rb') as f:
         label_encoder = pickle.load(f)
 
