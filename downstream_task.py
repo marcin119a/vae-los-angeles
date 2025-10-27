@@ -15,12 +15,10 @@ from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 
 from src.config import Config
-from src.models import MultiModalVAE
 from compare_vae_vs_mean import load_model_and_data
 
 
 def get_data():
-    """Loads and preprocesses data."""
     print("Loading data for downstream task from VAE's validation set...")
     try:
         merged_df = pd.read_pickle('data/val_data.pkl')
@@ -60,7 +58,6 @@ def generate_estimated_rna(vae_model, dna_data):
 
 
 class SimpleMLP(nn.Module):
-    """A simple MLP for classification."""
     def __init__(self, input_dim, num_classes):
         super().__init__()
         self.fc = nn.Sequential(
