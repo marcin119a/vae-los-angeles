@@ -59,4 +59,4 @@ latest_run_id.txt
 
 # Kaggle
 .kaggle/
-
+.venv/
