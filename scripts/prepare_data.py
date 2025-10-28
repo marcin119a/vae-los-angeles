@@ -19,7 +19,7 @@ def download_datasets():
     print(f"RNA dataset downloaded to: {rna_path}")
     
     print("\nDownloading DNA methylation dataset...")
-    dna_path = kagglehub.dataset_download('martininf1n1ty/dna-metylation-onkodb')
+    dna_path = kagglehub.dataset_download('martininf1n1ty/dna-methylation-imputed')
     print(f"DNA methylation dataset downloaded to: {dna_path}")
     
     return rna_path, dna_path
@@ -61,7 +61,7 @@ def prepare_mutation_data(rna_path):
 def prepare_dna_methylation_data(dna_path):
     """Prepare DNA methylation data"""
     print("\nPreparing DNA methylation data...")
-    df = pd.read_parquet(f'{dna_path}/filtered_data.parquet')
+    df = pd.read_parquet(f'{dna_path}/dna_methylation_imputed.parquet')
     
     # Sort by probe_id before grouping
     df_sorted = df.sort_values(by='probe_id')
