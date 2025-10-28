@@ -7,54 +7,48 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.preprocessing import LabelEncoder
-import matplotlib.pyplot as plt
 
 from src.config import Config
-from compare_vae_vs_mean import load_model_and_data
+from compare_vae_vs_mean import get_run_id, load_model_and_data
+from src.data import MultiModalDataset
 
 
-def get_data():
-    print("Loading data for downstream task from VAE's validation set...")
-    try:
-        merged_df = pd.read_pickle('data/val_data.pkl')
-    except FileNotFoundError:
-        print("Error: val_data.pkl not found. Please run train.py first to generate the data splits.")
-        exit()
-    with open('data/label_encoder.pkl', 'rb') as f:
-        label_encoder = pickle.load(f)
-
-    class_counts = merged_df['primary_site_encoded'].value_counts()
-    classes_to_keep = class_counts[class_counts >= 2].index
-    filtered_df = merged_df[merged_df['primary_site_encoded'].isin(classes_to_keep)]
-
-    le_new = LabelEncoder()
-    filtered_df['primary_site_encoded'] = le_new.fit_transform(filtered_df['primary_site'])
-
-    print(f"Original number of classes: {len(label_encoder.classes_)}")
-    print(f"Number of classes after filtering: {len(le_new.classes_)}")
-
-    return filtered_df, le_new, label_encoder
-
-def generate_estimated_dna(vae_model, rna_data):
+def generate_estimated_dna(vae_model, rna_data, dna_data, labels):
     """Generates estimated DNA methylation data from RNA data"""
     print("Generating estimated DNA methylation data...")
+    dataset = MultiModalDataset.from_numpy(rna_data, dna_data, labels)
+    dataloader = DataLoader(dataset, batch_size=Config.BATCH_SIZE, shuffle=False)
+    
+    est_dna_batches = []
     with torch.no_grad():
-        rna_tensor = torch.tensor(rna_data).to(Config.DEVICE)
-        _, est_dna, _, _, _ = vae_model(a=rna_tensor)
-    return est_dna.cpu().numpy()
+        for tpm, _, _ in dataloader:
+            tpm = tpm.to(Config.DEVICE)
+            _, est_dna, _, _, _ = vae_model(a=tpm)
+            est_dna_batches.append(est_dna.cpu().numpy())
+            
+    return np.concatenate(est_dna_batches, axis=0)
 
-def generate_estimated_rna(vae_model, dna_data):
+
+def generate_estimated_rna(vae_model, rna_data, dna_data, labels):
     """Generates estimated RNA data from DNA data."""
     print("Generating estimated RNA data...")
+    dataset = MultiModalDataset.from_numpy(rna_data, dna_data, labels)
+    dataloader = DataLoader(dataset, batch_size=Config.BATCH_SIZE, shuffle=False)
+
+    est_rna_batches = []
     with torch.no_grad():
-        dna_tensor = torch.tensor(dna_data).to(Config.DEVICE)
-        est_rna, _, _, _, _ = vae_model(b=dna_tensor)
-    return est_rna.cpu().numpy()
+        for _, beta_data, _ in dataloader:
+            beta_data = beta_data.to(Config.DEVICE)
+            est_rna, _, _, _, _ = vae_model(b=beta_data)
+            est_rna_batches.append(est_rna.cpu().numpy())
+
+    return np.concatenate(est_rna_batches, axis=0)
 
 
 class SimpleMLP(nn.Module):
@@ -187,9 +181,20 @@ def plot_per_tissue_comparison(metrics_dict, le_new, run_id):
 
 
 if __name__ == "__main__":
-    vae_model, _, _, run_id = load_model_and_data()
+    run_id = get_run_id()
+    vae_model, val_dataloader, val_dataset, _ = load_model_and_data()
 
-    filtered_df, le_new, original_le = get_data()
+    # Extract data from the validation dataset
+    val_df = val_dataset.dataframe
+
+    # Filter out classes with fewer than 2 samples in the validation set
+    class_counts = val_df['primary_site_encoded'].value_counts()
+    classes_to_keep = class_counts[class_counts >= 2].index
+    filtered_df = val_df[val_df['primary_site_encoded'].isin(classes_to_keep)].copy()
+
+    # Re-encode labels to be contiguous
+    le_new = LabelEncoder()
+    filtered_df['primary_site_encoded'] = le_new.fit_transform(filtered_df['primary_site'])
 
     rna_data = np.array(filtered_df['tpm_unstranded'].tolist()).astype(np.float32)
     dna_data = np.array(filtered_df['beta_value'].tolist()).astype(np.float32)
@@ -198,8 +203,8 @@ if __name__ == "__main__":
 
     class_weights = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
 
-    est_dna_data = generate_estimated_dna(vae_model, rna_data)
-    est_rna_data = generate_estimated_rna(vae_model, dna_data)
+    est_dna_data = generate_estimated_dna(vae_model, rna_data, dna_data, labels)
+    est_rna_data = generate_estimated_rna(vae_model, rna_data, dna_data, labels)
 
     scenarios = {
         "Orig. RNA": rna_data,
