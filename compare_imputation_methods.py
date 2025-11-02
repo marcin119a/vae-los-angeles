@@ -32,7 +32,7 @@ def get_run_id():
 
 
 def load_model_and_data():
-    """Load trained model and validation data"""
+    """Load trained model and data"""
     run_id = get_run_id()
     
     print("Loading processed data...")
@@ -44,14 +44,16 @@ def load_model_and_data():
     n_sites = len(label_encoder.classes_)
     
     # Split data
-    _, val_df = train_test_split(
+    train_df, val_df = train_test_split(
         merged_df, 
         test_size=Config.TRAIN_TEST_SPLIT, 
         random_state=Config.RANDOM_SEED
     )
     
-    # Create validation dataloader
+    # Create datasets
+    train_dataset = MultiModalDataset(train_df)
     val_dataset = MultiModalDataset(val_df)
+
     val_dataloader = DataLoader(
         val_dataset, 
         batch_size=Config.BATCH_SIZE, 
@@ -77,7 +79,7 @@ def load_model_and_data():
     model.load_state_dict(torch.load(model_path))
     model.eval()
     
-    return model, val_dataloader, val_dataset, run_id
+    return model, val_dataloader, train_dataset, val_dataset, run_id
 
 
 def compute_metrics(modality: str, model_name: str, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -145,19 +147,24 @@ def get_mean_imputation_predictions(val_dataset):
     return rna_mean_pred, dna_mean_pred
 
 
-def get_knn_predictions(rna_true, dna_true, n_neighbors=5):
+def get_knn_predictions(train_dataset, val_dataset, n_neighbors=5):
     """Get k-NN predictions for cross-modal reconstruction"""
     print(f"Computing k-NN (k={n_neighbors}) predictions...")
+
+    rna_train = train_dataset.tpm_data
+    dna_train = train_dataset.beta_data
+    rna_val_true = val_dataset.tpm_data
+    dna_val_true = val_dataset.beta_data
     
     # Predict RNA from DNA
     knn_rna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
-    knn_rna.fit(dna_true, rna_true)
-    rna_knn_pred = knn_rna.predict(dna_true)
+    knn_rna.fit(dna_train, rna_train)
+    rna_knn_pred = knn_rna.predict(dna_val_true)
     
     # Predict DNA from RNA
     knn_dna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
-    knn_dna.fit(rna_true, dna_true)
-    dna_knn_pred = knn_dna.predict(rna_true)
+    knn_dna.fit(rna_train, dna_train)
+    dna_knn_pred = knn_dna.predict(rna_val_true)
     
     return rna_knn_pred, dna_knn_pred
 
@@ -317,7 +324,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Load model and data
-    model, val_dataloader, val_dataset, run_id = load_model_and_data()
+    model, val_dataloader, train_dataset, val_dataset, run_id = load_model_and_data()
     
     # Get VAE predictions
     rna_true, dna_true, rna_vae_pred, dna_vae_pred = get_vae_predictions(model, val_dataloader)
@@ -326,7 +333,7 @@ def main():
     rna_mean_pred, dna_mean_pred = get_mean_imputation_predictions(val_dataset)
     
     # Get k-NN predictions
-    rna_knn_pred, dna_knn_pred = get_knn_predictions(rna_true, dna_true)
+    rna_knn_pred, dna_knn_pred = get_knn_predictions(train_dataset, val_dataset)
     
     print(f"Total validation samples: {len(rna_true)}")
     print(f"RNA dimension: {rna_true.shape[1]}")
