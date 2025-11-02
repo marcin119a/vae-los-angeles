@@ -35,7 +35,7 @@ class Config:
     BEST_MODEL_NAME = 'best_multivae.pt'
     
     # Device
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     
     # Data split
     TRAIN_TEST_SPLIT = 0.2

@@ -1,5 +1,5 @@
 """
-Script to compare trained VAE model with mean imputation baseline
+Script to compare trained VAE model with mean and k-NN imputation baselines
 """
 import os
 import pickle
@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
+from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib.pyplot as plt
@@ -144,11 +145,25 @@ def get_mean_imputation_predictions(val_dataset):
     return rna_mean_pred, dna_mean_pred
 
 
-def create_comparison_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_mean, run_id):
+def get_knn_predictions(rna_true, dna_true, n_neighbors=5):
+    """Get k-NN predictions for cross-modal reconstruction"""
+    print(f"Computing k-NN (k={n_neighbors}) predictions...")
+    
+    # Predict RNA from DNA
+    knn_rna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
+    knn_rna.fit(dna_true, rna_true)
+    rna_knn_pred = knn_rna.predict(dna_true)
+    
+    # Predict DNA from RNA
+    knn_dna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
+    knn_dna.fit(rna_true, dna_true)
+    dna_knn_pred = knn_dna.predict(rna_true)
+    
+    return rna_knn_pred, dna_knn_pred
+
+def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_vae, dna_mean, dna_knn, output_dir):
     """Create comparison plot using matplotlib"""
     print("Creating comparison plots...")
-    
-    run_suffix = f"_{run_id}" if run_id else ""
     
     # Sample a few examples for visualization
     n_samples = min(3, len(rna_true))
@@ -161,6 +176,7 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_m
         axes[0, 0].plot(rna_true[idx], label="Actual RNA", alpha=0.8, linewidth=2)
         axes[0, 0].plot(rna_vae[idx], label="VAE Prediction", alpha=0.8, linewidth=2)
         axes[0, 0].plot(rna_mean[idx], label="Mean Imputation", alpha=0.8, linewidth=2)
+        axes[0, 0].plot(rna_knn[idx], label="k-NN Prediction", alpha=0.8, linewidth=2)
         axes[0, 0].set_title(f"RNA Reconstruction (Sample {i+1})")
         axes[0, 0].set_xlabel("Gene Index")
         axes[0, 0].set_ylabel("Expression Value")
@@ -171,6 +187,7 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_m
         axes[0, 1].plot(dna_true[idx], label="Actual DNA", alpha=0.8, linewidth=2)
         axes[0, 1].plot(dna_vae[idx], label="VAE Prediction", alpha=0.8, linewidth=2)
         axes[0, 1].plot(dna_mean[idx], label="Mean Imputation", alpha=0.8, linewidth=2)
+        axes[0, 1].plot(dna_knn[idx], label="k-NN Prediction", alpha=0.8, linewidth=2)
         axes[0, 1].set_title(f"DNA Methylation Reconstruction (Sample {i+1})")
         axes[0, 1].set_xlabel("Probe Index")
         axes[0, 1].set_ylabel("Beta Value")
@@ -180,6 +197,7 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_m
         # Scatter plots for correlation
         axes[1, 0].scatter(rna_true[idx], rna_vae[idx], alpha=0.6, label="VAE", s=20)
         axes[1, 0].scatter(rna_true[idx], rna_mean[idx], alpha=0.6, label="Mean", s=20)
+        axes[1, 0].scatter(rna_true[idx], rna_knn[idx], alpha=0.6, label="k-NN", s=20)
         axes[1, 0].plot([rna_true[idx].min(), rna_true[idx].max()], 
                        [rna_true[idx].min(), rna_true[idx].max()], 'k--', alpha=0.5)
         axes[1, 0].set_title("RNA: Actual vs Predicted")
@@ -190,6 +208,7 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_m
         
         axes[1, 1].scatter(dna_true[idx], dna_vae[idx], alpha=0.6, label="VAE", s=20)
         axes[1, 1].scatter(dna_true[idx], dna_mean[idx], alpha=0.6, label="Mean", s=20)
+        axes[1, 1].scatter(dna_true[idx], dna_knn[idx], alpha=0.6, label="k-NN", s=20)
         axes[1, 1].plot([dna_true[idx].min(), dna_true[idx].max()], 
                        [dna_true[idx].min(), dna_true[idx].max()], 'k--', alpha=0.5)
         axes[1, 1].set_title("DNA: Actual vs Predicted")
@@ -199,13 +218,12 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_m
         axes[1, 1].grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(f'plots/comparison_sample_{i+1}{run_suffix}.png', dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(output_dir, f'comparison_sample_{i+1}.png'), dpi=300, bbox_inches='tight')
         plt.close()
     
-    print(f"Saved {n_samples} comparison plots to plots/")
+    print(f"Saved {n_samples} comparison plots to {output_dir}/")
 
-
-def create_interactive_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_mean):
+def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_vae, dna_mean, dna_knn):
     """Create interactive plotly visualization"""
     print("Creating interactive comparison plot...")
     
@@ -227,6 +245,8 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_
                             line=dict(color='red', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(y=rna_mean[sample_idx], name="Mean Imputation", 
                             line=dict(color='green', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(y=rna_knn[sample_idx], name="k-NN Prediction", 
+                            line=dict(color='purple', width=2)), row=1, col=1)
     
     # DNA reconstruction
     fig.add_trace(go.Scatter(y=dna_true[sample_idx], name="Actual DNA", 
@@ -235,18 +255,24 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_
                             line=dict(color='red', width=2)), row=1, col=2)
     fig.add_trace(go.Scatter(y=dna_mean[sample_idx], name="Mean Imputation", 
                             line=dict(color='green', width=2)), row=1, col=2)
+    fig.add_trace(go.Scatter(y=dna_knn[sample_idx], name="k-NN Prediction", 
+                            line=dict(color='purple', width=2)), row=1, col=2)
     
     # RNA correlation
     fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_vae[sample_idx], 
                             mode='markers', name="VAE", marker=dict(color='red')), row=2, col=1)
     fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_mean[sample_idx], 
                             mode='markers', name="Mean", marker=dict(color='green')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_knn[sample_idx], 
+                            mode='markers', name="k-NN", marker=dict(color='purple')), row=2, col=1)
     
     # DNA correlation
     fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_vae[sample_idx], 
                             mode='markers', name="VAE", marker=dict(color='red')), row=2, col=2)
     fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_mean[sample_idx], 
                             mode='markers', name="Mean", marker=dict(color='green')), row=2, col=2)
+    fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_knn[sample_idx], 
+                            mode='markers', name="k-NN", marker=dict(color='purple')), row=2, col=2)
     
     fig.update_xaxes(title_text="Feature Index", row=1, col=1)
     fig.update_xaxes(title_text="Probe Index", row=1, col=2)
@@ -262,34 +288,33 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, dna_true, dna_vae, dna_
         width=1200, 
         height=800, 
         hovermode="x unified",
-        title="VAE vs Mean Imputation Comparison"
+        title="VAE vs Mean vs k-NN Imputation Comparison"
     )
     
     return fig
 
-
-def save_results(results_df, run_id):
+def save_results(results_df, output_dir):
     """Save comparison results"""
-    run_suffix = f"_{run_id}" if run_id else ""
-    
     # Save as CSV
-    csv_filename = f'plots/comparison_results{run_suffix}.csv'
+    csv_filename = os.path.join(output_dir, 'comparison_results.csv')
     results_df.to_csv(csv_filename, index=False)
     print(f"Results saved to {csv_filename}")
     
     # Save as JSON
     import json
-    json_filename = f'plots/comparison_results{run_suffix}.json'
+    json_filename = os.path.join(output_dir, 'comparison_results.json')
     results_dict = results_df.to_dict('records')
     with open(json_filename, 'w') as f:
         json.dump(results_dict, f, indent=2)
     print(f"Results also saved to {json_filename}")
 
-
 def main():
     """Main comparison pipeline"""
     # Create plots directory
-    os.makedirs('plots', exist_ok=True)
+    run_id = get_run_id()
+    run_suffix = f"_{run_id}" if run_id else f"_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    output_dir = f'plots/comparison{run_suffix}'
+    os.makedirs(output_dir, exist_ok=True)
     
     # Load model and data
     model, val_dataloader, val_dataset, run_id = load_model_and_data()
@@ -300,6 +325,9 @@ def main():
     # Get mean imputation predictions
     rna_mean_pred, dna_mean_pred = get_mean_imputation_predictions(val_dataset)
     
+    # Get k-NN predictions
+    rna_knn_pred, dna_knn_pred = get_knn_predictions(rna_true, dna_true)
+    
     print(f"Total validation samples: {len(rna_true)}")
     print(f"RNA dimension: {rna_true.shape[1]}")
     print(f"DNA dimension: {dna_true.shape[1]}")
@@ -308,35 +336,36 @@ def main():
     results = [
         compute_metrics("RNA", "VAE", rna_true, rna_vae_pred),
         compute_metrics("RNA", "Mean Imputation", rna_true, rna_mean_pred),
+        compute_metrics("RNA", "k-NN Imputation", rna_true, rna_knn_pred),
         compute_metrics("DNA methylation", "VAE", dna_true, dna_vae_pred),
-        compute_metrics("DNA methylation", "Mean Imputation", dna_true, dna_mean_pred)
+        compute_metrics("DNA methylation", "Mean Imputation", dna_true, dna_mean_pred),
+        compute_metrics("DNA methylation", "k-NN Imputation", dna_true, dna_knn_pred)
     ]
     
     results_df = pd.DataFrame(results)
     
     # Display results
     print("\n" + "="*80)
-    print("COMPARISON RESULTS: VAE vs MEAN IMPUTATION")
+    print("COMPARISON RESULTS: VAE vs MEAN vs k-NN IMPUTATION")
     print("="*80)
     print(results_df.to_string(index=False))
     print("="*80)
     
     # Create visualizations
-    create_comparison_plot(rna_true, rna_vae_pred, rna_mean_pred,
-                          dna_true, dna_vae_pred, dna_mean_pred, run_id)
+    create_comparison_plot(rna_true, rna_vae_pred, rna_mean_pred, rna_knn_pred,
+                          dna_true, dna_vae_pred, dna_mean_pred, dna_knn_pred, output_dir)
     
     # Create interactive plot
-    interactive_fig = create_interactive_plot(rna_true, rna_vae_pred, rna_mean_pred,
-                                            dna_true, dna_vae_pred, dna_mean_pred)
+    interactive_fig = create_interactive_plot(rna_true, rna_vae_pred, rna_mean_pred, rna_knn_pred,
+                                            dna_true, dna_vae_pred, dna_mean_pred, dna_knn_pred)
     
-    run_suffix = f"_{run_id}" if run_id else ""
-    interactive_fig.write_html(f'plots/interactive_comparison{run_suffix}.html')
-    print(f"Interactive plot saved to plots/interactive_comparison{run_suffix}.html")
+    interactive_fig.write_html(os.path.join(output_dir, 'interactive_comparison.html'))
+    print(f"Interactive plot saved to {os.path.join(output_dir, 'interactive_comparison.html')}")
     
     # Save results
-    save_results(results_df, run_id)
+    save_results(results_df, output_dir)
     
-    print("\nComparison complete! All results saved to plots/")
+    print(f"\nComparison complete! All results saved to {output_dir}/")
 
 
 if __name__ == "__main__":
