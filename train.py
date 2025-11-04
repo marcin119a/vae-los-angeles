@@ -57,7 +57,8 @@ def prepare_dataloaders(merged_df):
     train_dataloader = DataLoader(
         train_dataset, 
         batch_size=Config.BATCH_SIZE, 
-        shuffle=True
+        shuffle=True,
+        drop_last=True  # Drop last incomplete batch to avoid BatchNorm issues
     )
     val_dataloader = DataLoader(
         val_dataset, 

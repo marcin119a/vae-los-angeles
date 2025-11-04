@@ -9,7 +9,7 @@ class Config:
     
     # Model architecture
     INPUT_DIM_A = 1177  # RNA expression dimension
-    INPUT_DIM_B = 15183  # DNA methylation dimension
+    INPUT_DIM_B = 1211  # DNA methylation dimension
     LATENT_DIM = 20    # Latent space dimension
     
     # Training parameters

@@ -19,7 +19,7 @@ def download_datasets():
     print(f"RNA dataset downloaded to: {rna_path}")
     
     print("\nDownloading DNA methylation dataset...")
-    dna_path = kagglehub.dataset_download('martininf1n1ty/dna-methylation-imputed')
+    dna_path = kagglehub.dataset_download('martininf1n1ty/dna-methylation-final-adnotated')
     print(f"DNA methylation dataset downloaded to: {dna_path}")
     
     return rna_path, dna_path
@@ -61,14 +61,17 @@ def prepare_mutation_data(rna_path):
 def prepare_dna_methylation_data(dna_path):
     """Prepare DNA methylation data"""
     print("\nPreparing DNA methylation data...")
-    df = pd.read_parquet(f'{dna_path}/dna_methylation_imputed.parquet')
+    df = pd.read_parquet(f'{dna_path}/part-00000-db52fd1e-039e-43fd-9eef-5f241ff75754-c000.snappy.parquet')
     
     # Sort by probe_id before grouping
-    df_sorted = df.sort_values(by='probe_id')
+    df_sorted = df.sort_values(by='probe_id_id')
     grouped_df = df_sorted.groupby('case_barcode')['beta_value'].apply(list).reset_index()
-    
-    print(f"DNA methylation data shape: {grouped_df.shape}")
-    return grouped_df
+
+    filtered_grouped_methylation_df = grouped_df[
+        grouped_df['beta_value'].apply(len) == Config.INPUT_DIM_B
+    ]
+    print(f"DNA methylation data shape: {filtered_grouped_methylation_df.shape}")
+    return filtered_grouped_methylation_df
 
 
 def merge_and_normalize_data(rna_df, dna_df, primary_site_df):
