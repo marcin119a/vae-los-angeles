@@ -1,15 +1,25 @@
 # Multi-Modal VAE for Cancer Genomics
 
-A PyTorch implementation of a Multi-Modal Variational Autoencoder (VAE) for analyzing cancer genomics data. This model jointly learns representations from RNA expression, DNA methylation, and primary site information.
+A PyTorch implementation of Multi-Modal Variational Autoencoders (VAE and CVAE) for analyzing cancer genomics data. This project includes both standard VAE and Conditional VAE (CVAE) implementations that jointly learn representations from RNA expression, DNA methylation, and primary site information.
 
 ## 🧬 Overview
 
-This project implements a β-VAE with three modalities:
+This project implements two model architectures:
+
+### 1. **Multi-Modal VAE** (Standard)
+A β-VAE with three modalities:
 - **Modality A**: RNA expression data (TPM values)
 - **Modality B**: DNA methylation data (beta values)
 - **Modality C**: Primary tumor site labels
 
-The model can perform cross-modal reconstruction, enabling prediction of one modality from another (e.g., predicting RNA expression from DNA methylation patterns).
+### 2. **Conditional Multi-Modal VAE (CVAE)** ⭐ NEW
+An extension of VAE that conditions generation on primary site labels:
+- **Conditional encoding**: Encoders receive data + site labels
+- **Conditional decoding**: Decoders receive latent vector + site labels
+- **Controlled generation**: Generate data for specific cancer types
+- **Better separation**: Improved class separation in latent space
+
+Both models can perform cross-modal reconstruction, enabling prediction of one modality from another (e.g., predicting RNA expression from DNA methylation patterns).
 
 ## 📁 Project Structure
 
