@@ -29,7 +29,8 @@ def vae_loss(recon_a, a, recon_b, b, recon_c, site, mu, logvar, beta=1e-3, gamma
     if recon_a is not None and a is not None:
         recon += F.mse_loss(recon_a, a, reduction='sum')
     if recon_b is not None and b is not None:
-        recon += F.mse_loss(recon_b, b, reduction='sum')
+        # Use binary cross-entropy for DNA methylation data (beta values in [0,1])
+        recon += F.binary_cross_entropy(recon_b, b, reduction='sum')
 
     # Classification loss
     class_loss = 0
