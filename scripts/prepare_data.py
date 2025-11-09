@@ -33,8 +33,12 @@ def prepare_rna_data(rna_path):
     # Sort by gene_name before grouping
     df_expressions_sorted = df_expressions.sort_values(by='gene_name')
     df_expressions_sorted = df_expressions_sorted.drop_duplicates(subset=['case_barcode', 'gene_name'])
-    # Group by case_barcode and aggregate tpm_unstranded into a list
-    grouped_expressions_df = df_expressions_sorted.groupby('case_barcode')['tpm_unstranded'].apply(list).reset_index()
+    
+    # Group by case_barcode and aggregate tpm_unstranded into a list, keep primary_site
+    grouped_expressions_df = df_expressions_sorted.groupby('case_barcode').agg({
+        'tpm_unstranded': list,
+        'primary_site': 'first'  # Take first primary_site (should be same for all genes in a case)
+    }).reset_index()
     
     # Filter to keep only rows where the list length is Config.INPUT_DIM_A
     filtered_grouped_expressions_df = grouped_expressions_df[
@@ -45,17 +49,6 @@ def prepare_rna_data(rna_path):
     return filtered_grouped_expressions_df
 
 
-def prepare_mutation_data(rna_path):
-    """Extract primary site information from mutations data"""
-    print("\nExtracting primary site information...")
-    df_mutations = pd.read_parquet(f'{rna_path}/mutations (1).parquet')
-    
-    primary_site_df = df_mutations[['case_barcode', 'primary_site']].drop_duplicates(
-        subset=['case_barcode'], keep='first'
-    )
-    
-    print(f"Primary site data shape: {primary_site_df.shape}")
-    return primary_site_df
 
 
 def prepare_dna_methylation_data(dna_path):
@@ -74,15 +67,12 @@ def prepare_dna_methylation_data(dna_path):
     return filtered_grouped_methylation_df
 
 
-def merge_and_normalize_data(rna_df, dna_df, primary_site_df):
+def merge_and_normalize_data(rna_df, dna_df):
     """Merge all datasets and normalize"""
     print("\nMerging datasets...")
     
-    # Merge DNA methylation with primary site
-    merged_grouped_df = pd.merge(dna_df, primary_site_df, on='case_barcode')
-    
-    # Merge RNA expression with DNA methylation
-    merged_df = pd.merge(rna_df, merged_grouped_df, on='case_barcode')
+    # Merge RNA expression with DNA methylation (primary_site already in rna_df)
+    merged_df = pd.merge(rna_df, dna_df, on='case_barcode')
     
     print(f"Merged data shape: {merged_df.shape}")
     
@@ -113,11 +103,10 @@ def main():
     
     # Prepare individual datasets
     rna_df = prepare_rna_data(rna_path)
-    primary_site_df = prepare_mutation_data(rna_path)
     dna_df = prepare_dna_methylation_data(dna_path)
     
     # Merge and normalize
-    merged_df, label_encoder = merge_and_normalize_data(rna_df, dna_df, primary_site_df)
+    merged_df, label_encoder = merge_and_normalize_data(rna_df, dna_df)
     
     # Save processed data
     print("\nSaving processed data...")
