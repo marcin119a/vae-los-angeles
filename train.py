@@ -8,6 +8,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
 from datetime import datetime
 
@@ -35,6 +36,42 @@ def load_data():
     print(f"Number of primary sites: {len(label_encoder.classes_)}")
     
     return merged_df, label_encoder
+
+
+def compute_class_weights(train_df, n_classes):
+    """Compute class weights for balanced loss"""
+    print("\nComputing class weights for balanced classification loss...")
+    
+    # Get class labels from training data
+    class_labels = train_df['primary_site_encoded'].values
+    
+    # Get unique classes present in training data
+    unique_classes = np.unique(class_labels)
+    
+    # Compute class weights only for classes present in training data
+    class_weights_present = compute_class_weight(
+        class_weight='balanced',
+        classes=unique_classes,
+        y=class_labels
+    )
+    
+    # Create full weight tensor with 1.0 for missing classes (won't be used in training)
+    class_weights = np.ones(n_classes, dtype=np.float32)
+    class_weights[unique_classes] = class_weights_present
+    
+    # Convert to tensor
+    class_weights_tensor = torch.FloatTensor(class_weights).to(Config.DEVICE)
+    
+    # Print class distribution and weights
+    unique, counts = np.unique(class_labels, return_counts=True)
+    print(f"Class distribution in training set:")
+    print(f"  Total classes in training set: {len(unique)} out of {n_classes}")
+    for cls, count in zip(unique[:5], counts[:5]):
+        print(f"  Class {cls}: {count} samples, weight: {class_weights[cls]:.4f}")
+    if len(unique) > 5:
+        print(f"  ... and {len(unique) - 5} more classes")
+    
+    return class_weights_tensor
 
 
 def prepare_dataloaders(merged_df):
@@ -66,10 +103,10 @@ def prepare_dataloaders(merged_df):
         shuffle=False
     )
     
-    return train_dataloader, val_dataloader
+    return train_dataloader, val_dataloader, train_df
 
 
-def train_epoch(model, dataloader, optimizer, epoch):
+def train_epoch(model, dataloader, optimizer, epoch, class_weights):
     """Train for one epoch"""
     model.train()
     running_train_loss = 0.0
@@ -86,10 +123,10 @@ def train_epoch(model, dataloader, optimizer, epoch):
         # Forward pass
         recon_a, recon_b, recon_c, mu, logvar = model(a=tpm, b=beta_data, site=site)
         
-        # Compute loss
+        # Compute loss with class weights
         loss, recon_loss, class_loss, kld_loss = vae_loss(
             recon_a, tpm, recon_b, beta_data, recon_c, site, mu, logvar,
-            beta=beta, gamma=Config.GAMMA
+            beta=beta, gamma=Config.GAMMA, class_weights=class_weights
         )
         
         # Backward pass
@@ -108,7 +145,7 @@ def train_epoch(model, dataloader, optimizer, epoch):
     return avg_train_loss, beta
 
 
-def validate(model, dataloader, epoch):
+def validate(model, dataloader, epoch, class_weights):
     """Validate the model"""
     model.eval()
     running_val_loss = 0.0
@@ -122,9 +159,10 @@ def validate(model, dataloader, epoch):
             # Forward pass
             recon_a, recon_b, recon_c, mu, logvar = model(a=tpm, b=beta_data, site=site)
             
-            # Compute loss
+            # Compute loss with class weights
             loss, _, _, _ = vae_loss(
-                recon_a, tpm, recon_b, beta_data, recon_c, site, mu, logvar, beta
+                recon_a, tpm, recon_b, beta_data, recon_c, site, mu, logvar, 
+                beta=beta, class_weights=class_weights
             )
             
             running_val_loss += loss.item()
@@ -164,7 +202,10 @@ def main():
     n_sites = len(label_encoder.classes_)
     
     # Prepare dataloaders
-    train_dataloader, val_dataloader = prepare_dataloaders(merged_df)
+    train_dataloader, val_dataloader, train_df = prepare_dataloaders(merged_df)
+    
+    # Compute class weights for balanced classification loss
+    class_weights = compute_class_weights(train_df, n_sites)
     
     # Initialize model
     print(f"\nInitializing model on {Config.DEVICE}...")
@@ -199,11 +240,11 @@ def main():
     
     for epoch in range(Config.NUM_EPOCHS):
         # Train
-        avg_train_loss, beta = train_epoch(model, train_dataloader, optimizer, epoch)
+        avg_train_loss, beta = train_epoch(model, train_dataloader, optimizer, epoch, class_weights)
         train_losses.append(avg_train_loss)
         
         # Validate
-        avg_val_loss = validate(model, val_dataloader, epoch)
+        avg_val_loss = validate(model, val_dataloader, epoch, class_weights)
         val_losses.append(avg_val_loss)
         
         # Update scheduler
