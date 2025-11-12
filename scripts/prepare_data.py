@@ -67,14 +67,28 @@ def prepare_dna_methylation_data(dna_path):
     return filtered_grouped_methylation_df
 
 
-def merge_and_normalize_data(rna_df, dna_df):
+def merge_and_normalize_data(rna_df, dna_df, top_n_sites=24):
     """Merge all datasets and normalize"""
     print("\nMerging datasets...")
     
     # Merge RNA expression with DNA methylation (primary_site already in rna_df)
     merged_df = pd.merge(rna_df, dna_df, on='case_barcode')
     
-    print(f"Merged data shape: {merged_df.shape}")
+    print(f"Merged data shape before filtering: {merged_df.shape}")
+    
+    # Filter to keep only top N most common primary sites
+    print(f"\nFiltering to keep only top {top_n_sites} most common primary sites...")
+    site_counts = merged_df['primary_site'].value_counts()
+    print(f"Total number of unique primary sites: {len(site_counts)}")
+    
+    top_sites = site_counts.head(top_n_sites).index.tolist()
+    print(f"\nTop {top_n_sites} primary sites:")
+    for i, (site, count) in enumerate(site_counts.head(top_n_sites).items(), 1):
+        print(f"  {i}. {site}: {count} samples")
+    
+    # Filter dataframe to keep only top sites
+    merged_df = merged_df[merged_df['primary_site'].isin(top_sites)].reset_index(drop=True)
+    print(f"\nMerged data shape after filtering: {merged_df.shape}")
     
     # Normalize tpm_unstranded data
     print("\nNormalizing RNA expression data...")
@@ -83,15 +97,14 @@ def merge_and_normalize_data(rna_df, dna_df):
     )
     
     # Encode primary site labels
-    print("Encoding primary site labels...")
+    print("\nEncoding primary site labels...")
     label_encoder = LabelEncoder()
     merged_df['primary_site_encoded'] = label_encoder.fit_transform(merged_df['primary_site'])
     
-    print("\nPrimary site encoding (first 5):")
-    for cls, code in zip(label_encoder.classes_[:5], range(min(5, len(label_encoder.classes_)))):
-        print(f"{cls} → {code}")
-    
-    print(f"\nTotal number of primary sites: {len(label_encoder.classes_)}")
+    print(f"\nPrimary site encoding (all {len(label_encoder.classes_)} classes):")
+    for cls, code in zip(label_encoder.classes_, range(len(label_encoder.classes_))):
+        count = (merged_df['primary_site'] == cls).sum()
+        print(f"  {code}: {cls} ({count} samples)")
     
     return merged_df, label_encoder
 
