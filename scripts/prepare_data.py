@@ -93,7 +93,7 @@ def merge_and_normalize_data(rna_df, dna_df, top_n_sites=24):
     # Normalize tpm_unstranded data
     print("\nNormalizing RNA expression data...")
     merged_df["tpm_unstranded"] = merged_df["tpm_unstranded"].apply(
-        lambda x: (np.array(x) - np.mean(x)) / (np.std(x) + 1e-8)
+        lambda x: np.log1p(np.array(x))
     )
     
     # Encode primary site labels
