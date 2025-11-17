@@ -3,6 +3,7 @@ Script to compare trained VAE model with mean and k-NN imputation baselines
 """
 import os
 import pickle
+import json
 import numpy as np
 import pandas as pd
 import torch
@@ -31,8 +32,8 @@ def get_run_id():
         return None
 
 
-def load_model_and_data():
-    """Load trained model and data"""
+def load_models_and_data():
+    """Load trained models and data"""
     run_id = get_run_id()
     
     print("Loading processed data...")
@@ -60,7 +61,7 @@ def load_model_and_data():
         shuffle=False
     )
     
-    # Load model
+    # Load original model
     if run_id:
         model_filename = f'best_multivae_{run_id}.pt'
         print(f"Loading model from run: {run_id}")
@@ -78,8 +79,34 @@ def load_model_and_data():
     model_path = os.path.join(Config.CHECKPOINT_DIR, model_filename)
     model.load_state_dict(torch.load(model_path))
     model.eval()
+
+    # Load optimized model
+    print("Loading optimized model...")
+    optimized_model = None
+    if os.path.exists('best_hyperparameters.json'):
+        with open('best_hyperparameters.json', 'r') as f:
+            best_params = json.load(f)
+        
+        optimized_model = MultiModalVAE(
+            Config.INPUT_DIM_A,
+            Config.INPUT_DIM_B,
+            n_sites,
+            best_params['latent_dim'],
+            embed_dim=best_params['embed_dim']
+        ).to(Config.DEVICE)
+
+        optimized_model_path = os.path.join(Config.CHECKPOINT_DIR, 'best_multivae_optimized.pt')
+        if os.path.exists(optimized_model_path):
+            optimized_model.load_state_dict(torch.load(optimized_model_path))
+            optimized_model.eval()
+        else:
+            print("Optimized model weights not found. Please run optimize_hyperparameters.py first.")
+            optimized_model = None
+    else:
+        print("Optimized model hyperparameters not found. Please run optimize_hyperparameters.py first.")
+
     
-    return model, val_dataloader, train_dataset, val_dataset, run_id
+    return model, optimized_model, val_dataloader, train_dataset, val_dataset, run_id
 
 
 def compute_metrics(modality: str, model_name: str, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -168,7 +195,7 @@ def get_knn_predictions(train_dataset, val_dataset, n_neighbors=5):
     
     return rna_knn_pred, dna_knn_pred
 
-def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_vae, dna_mean, dna_knn, output_dir):
+def create_comparison_plot(rna_true, rna_vae, rna_optimized_vae, rna_mean, rna_knn, dna_true, dna_vae, dna_optimized_vae, dna_mean, dna_knn, output_dir):
     """Create comparison plot using matplotlib"""
     print("Creating comparison plots...")
     
@@ -182,6 +209,8 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_v
         # RNA comparison
         axes[0, 0].plot(rna_true[idx], label="Actual RNA", alpha=0.8, linewidth=2)
         axes[0, 0].plot(rna_vae[idx], label="VAE Prediction", alpha=0.8, linewidth=2)
+        if rna_optimized_vae is not None:
+            axes[0, 0].plot(rna_optimized_vae[idx], label="Optimized VAE Prediction", alpha=0.8, linewidth=2)
         axes[0, 0].plot(rna_mean[idx], label="Mean Imputation", alpha=0.8, linewidth=2)
         axes[0, 0].plot(rna_knn[idx], label="k-NN Prediction", alpha=0.8, linewidth=2)
         axes[0, 0].set_title(f"RNA Reconstruction (Sample {i+1})")
@@ -193,6 +222,8 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_v
         # DNA comparison
         axes[0, 1].plot(dna_true[idx], label="Actual DNA", alpha=0.8, linewidth=2)
         axes[0, 1].plot(dna_vae[idx], label="VAE Prediction", alpha=0.8, linewidth=2)
+        if dna_optimized_vae is not None:
+            axes[0, 1].plot(dna_optimized_vae[idx], label="Optimized VAE Prediction", alpha=0.8, linewidth=2)
         axes[0, 1].plot(dna_mean[idx], label="Mean Imputation", alpha=0.8, linewidth=2)
         axes[0, 1].plot(dna_knn[idx], label="k-NN Prediction", alpha=0.8, linewidth=2)
         axes[0, 1].set_title(f"DNA Methylation Reconstruction (Sample {i+1})")
@@ -203,6 +234,8 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_v
         
         # Scatter plots for correlation
         axes[1, 0].scatter(rna_true[idx], rna_vae[idx], alpha=0.6, label="VAE", s=20)
+        if rna_optimized_vae is not None:
+            axes[1, 0].scatter(rna_true[idx], rna_optimized_vae[idx], alpha=0.6, label="Optimized VAE", s=20)
         axes[1, 0].scatter(rna_true[idx], rna_mean[idx], alpha=0.6, label="Mean", s=20)
         axes[1, 0].scatter(rna_true[idx], rna_knn[idx], alpha=0.6, label="k-NN", s=20)
         axes[1, 0].plot([rna_true[idx].min(), rna_true[idx].max()], 
@@ -214,6 +247,8 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_v
         axes[1, 0].grid(True, alpha=0.3)
         
         axes[1, 1].scatter(dna_true[idx], dna_vae[idx], alpha=0.6, label="VAE", s=20)
+        if dna_optimized_vae is not None:
+            axes[1, 1].scatter(dna_true[idx], dna_optimized_vae[idx], alpha=0.6, label="Optimized VAE", s=20)
         axes[1, 1].scatter(dna_true[idx], dna_mean[idx], alpha=0.6, label="Mean", s=20)
         axes[1, 1].scatter(dna_true[idx], dna_knn[idx], alpha=0.6, label="k-NN", s=20)
         axes[1, 1].plot([dna_true[idx].min(), dna_true[idx].max()], 
@@ -230,7 +265,7 @@ def create_comparison_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_v
     
     print(f"Saved {n_samples} comparison plots to {output_dir}/")
 
-def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_vae, dna_mean, dna_knn):
+def create_interactive_plot(rna_true, rna_vae, rna_optimized_vae, rna_mean, rna_knn, dna_true, dna_vae, dna_optimized_vae, dna_mean, dna_knn):
     """Create interactive plotly visualization"""
     print("Creating interactive comparison plot...")
     
@@ -250,6 +285,9 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_
                             line=dict(color='blue', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(y=rna_vae[sample_idx], name="VAE Prediction", 
                             line=dict(color='red', width=2)), row=1, col=1)
+    if rna_optimized_vae is not None:
+        fig.add_trace(go.Scatter(y=rna_optimized_vae[sample_idx], name="Optimized VAE", 
+                                line=dict(color='orange', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(y=rna_mean[sample_idx], name="Mean Imputation", 
                             line=dict(color='green', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(y=rna_knn[sample_idx], name="k-NN Prediction", 
@@ -260,6 +298,9 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_
                             line=dict(color='blue', width=2)), row=1, col=2)
     fig.add_trace(go.Scatter(y=dna_vae[sample_idx], name="VAE Prediction", 
                             line=dict(color='red', width=2)), row=1, col=2)
+    if dna_optimized_vae is not None:
+        fig.add_trace(go.Scatter(y=dna_optimized_vae[sample_idx], name="Optimized VAE", 
+                                line=dict(color='orange', width=2)), row=1, col=2)
     fig.add_trace(go.Scatter(y=dna_mean[sample_idx], name="Mean Imputation", 
                             line=dict(color='green', width=2)), row=1, col=2)
     fig.add_trace(go.Scatter(y=dna_knn[sample_idx], name="k-NN Prediction", 
@@ -268,6 +309,9 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_
     # RNA correlation
     fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_vae[sample_idx], 
                             mode='markers', name="VAE", marker=dict(color='red')), row=2, col=1)
+    if rna_optimized_vae is not None:
+        fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_optimized_vae[sample_idx], 
+                                mode='markers', name="Optimized VAE", marker=dict(color='orange')), row=2, col=1)
     fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_mean[sample_idx], 
                             mode='markers', name="Mean", marker=dict(color='green')), row=2, col=1)
     fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_knn[sample_idx], 
@@ -276,6 +320,9 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_
     # DNA correlation
     fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_vae[sample_idx], 
                             mode='markers', name="VAE", marker=dict(color='red')), row=2, col=2)
+    if dna_optimized_vae is not None:
+        fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_optimized_vae[sample_idx], 
+                                mode='markers', name="Optimized VAE", marker=dict(color='orange')), row=2, col=2)
     fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_mean[sample_idx], 
                             mode='markers', name="Mean", marker=dict(color='green')), row=2, col=2)
     fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_knn[sample_idx], 
@@ -295,7 +342,7 @@ def create_interactive_plot(rna_true, rna_vae, rna_mean, rna_knn, dna_true, dna_
         width=1200, 
         height=800, 
         hovermode="x unified",
-        title="VAE vs Mean vs k-NN Imputation Comparison"
+        title="VAE vs Optimized VAE vs Mean vs k-NN Imputation Comparison"
     )
     
     return fig
@@ -308,7 +355,6 @@ def save_results(results_df, output_dir):
     print(f"Results saved to {csv_filename}")
     
     # Save as JSON
-    import json
     json_filename = os.path.join(output_dir, 'comparison_results.json')
     results_dict = results_df.to_dict('records')
     with open(json_filename, 'w') as f:
@@ -324,11 +370,16 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Load model and data
-    model, val_dataloader, train_dataset, val_dataset, run_id = load_model_and_data()
+    model, optimized_model, val_dataloader, train_dataset, val_dataset, run_id = load_models_and_data()
     
     # Get VAE predictions
     rna_true, dna_true, rna_vae_pred, dna_vae_pred = get_vae_predictions(model, val_dataloader)
     
+    # Get Optimized VAE predictions
+    rna_optimized_vae_pred, dna_optimized_vae_pred = None, None
+    if optimized_model:
+        _, _, rna_optimized_vae_pred, dna_optimized_vae_pred = get_vae_predictions(optimized_model, val_dataloader)
+
     # Get mean imputation predictions
     rna_mean_pred, dna_mean_pred = get_mean_imputation_predictions(val_dataset)
     
@@ -348,23 +399,26 @@ def main():
         compute_metrics("DNA methylation", "Mean Imputation", dna_true, dna_mean_pred),
         compute_metrics("DNA methylation", "k-NN Imputation", dna_true, dna_knn_pred)
     ]
-    
+    if optimized_model:
+        results.append(compute_metrics("RNA", "Optimized VAE", rna_true, rna_optimized_vae_pred))
+        results.append(compute_metrics("DNA methylation", "Optimized VAE", dna_true, dna_optimized_vae_pred))
+
     results_df = pd.DataFrame(results)
     
     # Display results
     print("\n" + "="*80)
-    print("COMPARISON RESULTS: VAE vs MEAN vs k-NN IMPUTATION")
+    print("COMPARISON RESULTS: VAE vs OPTIMIZED VAE vs MEAN vs k-NN IMPUTATION")
     print("="*80)
     print(results_df.to_string(index=False))
     print("="*80)
     
     # Create visualizations
-    create_comparison_plot(rna_true, rna_vae_pred, rna_mean_pred, rna_knn_pred,
-                          dna_true, dna_vae_pred, dna_mean_pred, dna_knn_pred, output_dir)
+    create_comparison_plot(rna_true, rna_vae_pred, rna_optimized_vae_pred, rna_mean_pred, rna_knn_pred,
+                           dna_true, dna_vae_pred, dna_optimized_vae_pred, dna_mean_pred, dna_knn_pred, output_dir)
     
     # Create interactive plot
-    interactive_fig = create_interactive_plot(rna_true, rna_vae_pred, rna_mean_pred, rna_knn_pred,
-                                            dna_true, dna_vae_pred, dna_mean_pred, dna_knn_pred)
+    interactive_fig = create_interactive_plot(rna_true, rna_vae_pred, rna_optimized_vae_pred, rna_mean_pred, rna_knn_pred,
+                                              dna_true, dna_vae_pred, dna_optimized_vae_pred, dna_mean_pred, dna_knn_pred)
     
     interactive_fig.write_html(os.path.join(output_dir, 'interactive_comparison.html'))
     print(f"Interactive plot saved to {os.path.join(output_dir, 'interactive_comparison.html')}")

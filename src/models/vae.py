@@ -24,11 +24,11 @@ class MultiModalVAE(nn.Module):
     - B: DNA methylation data
     - C: Primary site labels
     """
-    def __init__(self, input_dim_a, input_dim_b, n_sites, latent_dim):
+    def __init__(self, input_dim_a, input_dim_b, n_sites, latent_dim, embed_dim=32):
         super().__init__()
         self.encoder_a = EncoderA(input_dim_a, latent_dim)
         self.encoder_b = EncoderB(input_dim_b, latent_dim)
-        self.encoder_c = EncoderC(n_sites, latent_dim)
+        self.encoder_c = EncoderC(n_sites, latent_dim, embed_dim=embed_dim)
 
         self.decoder_a = DecoderA(latent_dim, input_dim_a)
         self.decoder_b = DecoderB(latent_dim, input_dim_b)
