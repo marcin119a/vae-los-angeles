@@ -565,11 +565,12 @@ def main():
     
     results_df = pd.DataFrame(results)
     
-    # Display results
+    # Display results (remove internal fields before displaying)
+    results_df_display = results_df.drop(columns=['_pearson_all'], errors='ignore')
     print("\n" + "="*80)
     print("DIRECTIONAL VAE IMPUTATION COMPARISON RESULTS")
     print("="*80)
-    print(results_df.to_string(index=False))
+    print(results_df_display.to_string(index=False))
     print("="*80)
     
     # Create visualizations
