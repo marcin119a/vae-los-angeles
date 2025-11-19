@@ -11,6 +11,8 @@ from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.impute import SimpleImputer
+from sklearn.neighbors import KNeighborsRegressor
 from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
@@ -51,13 +53,14 @@ def load_models_and_data():
     n_sites = len(label_encoder.classes_)
     
     # Split data
-    _, val_df = train_test_split(
+    train_df, val_df = train_test_split(
         merged_df, 
         test_size=Config.TRAIN_TEST_SPLIT, 
         random_state=Config.RANDOM_SEED
     )
     
-    # Create validation dataloader
+    # Create datasets
+    train_dataset = MultiModalDataset(train_df)
     val_dataset = MultiModalDataset(val_df)
     val_dataloader = DataLoader(
         val_dataset, 
@@ -109,7 +112,7 @@ def load_models_and_data():
     else:
         print("Warning: No DNA2RNAVAE run ID found. Please train the model first.")
     
-    return rna2dna_model, dna2rna_model, val_dataloader, rna2dna_run_id, dna2rna_run_id
+    return rna2dna_model, dna2rna_model, val_dataloader, train_dataset, val_dataset, rna2dna_run_id, dna2rna_run_id
 
 
 def get_predictions(model, dataloader, model_type):
@@ -197,9 +200,54 @@ def compute_metrics(y_true, y_pred, modality_name, model_name):
     return result
 
 
+def get_mean_imputation_predictions(val_dataset):
+    """Get mean imputation predictions"""
+    print("Computing mean imputation predictions...")
+    
+    # Fit imputers on the validation data
+    rna_imputer = SimpleImputer(strategy="mean")
+    dna_imputer = SimpleImputer(strategy="mean")
+    
+    rna_imputer.fit(val_dataset.tpm_data)
+    dna_imputer.fit(val_dataset.beta_data)
+    
+    # Get mean vectors
+    rna_mean_vector = rna_imputer.statistics_.astype(np.float32)
+    dna_mean_vector = dna_imputer.statistics_.astype(np.float32)
+    
+    # Create predictions by repeating mean vectors for all samples
+    rna_mean_pred = np.tile(rna_mean_vector, (len(val_dataset), 1))
+    dna_mean_pred = np.tile(dna_mean_vector, (len(val_dataset), 1))
+    
+    return rna_mean_pred, dna_mean_pred
+
+
+def get_knn_predictions(train_dataset, val_dataset, n_neighbors=5):
+    """Get k-NN predictions for cross-modal reconstruction"""
+    print(f"Computing k-NN (k={n_neighbors}) predictions...")
+
+    rna_train = train_dataset.tpm_data
+    dna_train = train_dataset.beta_data
+    rna_val_true = val_dataset.tpm_data
+    dna_val_true = val_dataset.beta_data
+    
+    # Predict RNA from DNA
+    knn_rna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
+    knn_rna.fit(dna_train, rna_train)
+    rna_knn_pred = knn_rna.predict(dna_val_true)
+    
+    # Predict DNA from RNA
+    knn_dna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
+    knn_dna.fit(rna_train, dna_train)
+    dna_knn_pred = knn_dna.predict(rna_val_true)
+    
+    return rna_knn_pred, dna_knn_pred
+
+
 def plot_comparison(rna_true, dna_true, 
-                    rna2dna_rna_pred, rna2dna_dna_pred,
-                    dna2rna_rna_pred, dna2rna_dna_pred,
+                    rna2dna_dna_pred, dna2rna_rna_pred,
+                    dna_mean_pred, rna_mean_pred,
+                    dna_knn_pred, rna_knn_pred,
                     output_dir, n_samples=3):
     """Create comparison plots"""
     print(f"\nCreating comparison plots ({n_samples} samples)...")
@@ -212,6 +260,8 @@ def plot_comparison(rna_true, dna_true,
         # DNA prediction comparison
         axes[0, 0].plot(dna_true[idx], label="Actual DNA", alpha=0.8, linewidth=2, color='black')
         axes[0, 0].plot(rna2dna_dna_pred[idx], label="RNA2DNAVAE", alpha=0.8, linewidth=2, color='blue')
+        axes[0, 0].plot(dna_mean_pred[idx], label="Mean Imputation", alpha=0.8, linewidth=2, color='green')
+        axes[0, 0].plot(dna_knn_pred[idx], label="k-NN Imputation", alpha=0.8, linewidth=2, color='purple')
         axes[0, 0].set_title(f"DNA Methylation Prediction (Sample {i+1})")
         axes[0, 0].set_xlabel("Probe Index")
         axes[0, 0].set_ylabel("Beta Value")
@@ -221,6 +271,8 @@ def plot_comparison(rna_true, dna_true,
         # RNA prediction comparison
         axes[0, 1].plot(rna_true[idx], label="Actual RNA", alpha=0.8, linewidth=2, color='black')
         axes[0, 1].plot(dna2rna_rna_pred[idx], label="DNA2RNAVAE", alpha=0.8, linewidth=2, color='red')
+        axes[0, 1].plot(rna_mean_pred[idx], label="Mean Imputation", alpha=0.8, linewidth=2, color='green')
+        axes[0, 1].plot(rna_knn_pred[idx], label="k-NN Imputation", alpha=0.8, linewidth=2, color='purple')
         axes[0, 1].set_title(f"RNA Expression Prediction (Sample {i+1})")
         axes[0, 1].set_xlabel("Gene Index")
         axes[0, 1].set_ylabel("Expression Value")
@@ -228,23 +280,29 @@ def plot_comparison(rna_true, dna_true,
         axes[0, 1].grid(True, alpha=0.3)
         
         # DNA scatter plot
-        axes[1, 0].scatter(dna_true[idx], rna2dna_dna_pred[idx], alpha=0.6, s=20, color='blue')
-        min_val = min(dna_true[idx].min(), rna2dna_dna_pred[idx].min())
-        max_val = max(dna_true[idx].max(), rna2dna_dna_pred[idx].max())
+        axes[1, 0].scatter(dna_true[idx], rna2dna_dna_pred[idx], alpha=0.6, s=20, color='blue', label="RNA2DNAVAE")
+        axes[1, 0].scatter(dna_true[idx], dna_mean_pred[idx], alpha=0.6, s=20, color='green', label="Mean")
+        axes[1, 0].scatter(dna_true[idx], dna_knn_pred[idx], alpha=0.6, s=20, color='purple', label="k-NN")
+        min_val = min(dna_true[idx].min(), rna2dna_dna_pred[idx].min(), dna_mean_pred[idx].min(), dna_knn_pred[idx].min())
+        max_val = max(dna_true[idx].max(), rna2dna_dna_pred[idx].max(), dna_mean_pred[idx].max(), dna_knn_pred[idx].max())
         axes[1, 0].plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
-        axes[1, 0].set_title("DNA: Actual vs RNA2DNAVAE Prediction")
+        axes[1, 0].set_title("DNA: Actual vs Predicted")
         axes[1, 0].set_xlabel("Actual DNA")
         axes[1, 0].set_ylabel("Predicted DNA")
+        axes[1, 0].legend()
         axes[1, 0].grid(True, alpha=0.3)
         
         # RNA scatter plot
-        axes[1, 1].scatter(rna_true[idx], dna2rna_rna_pred[idx], alpha=0.6, s=20, color='red')
-        min_val = min(rna_true[idx].min(), dna2rna_rna_pred[idx].min())
-        max_val = max(rna_true[idx].max(), dna2rna_rna_pred[idx].max())
+        axes[1, 1].scatter(rna_true[idx], dna2rna_rna_pred[idx], alpha=0.6, s=20, color='red', label="DNA2RNAVAE")
+        axes[1, 1].scatter(rna_true[idx], rna_mean_pred[idx], alpha=0.6, s=20, color='green', label="Mean")
+        axes[1, 1].scatter(rna_true[idx], rna_knn_pred[idx], alpha=0.6, s=20, color='purple', label="k-NN")
+        min_val = min(rna_true[idx].min(), dna2rna_rna_pred[idx].min(), rna_mean_pred[idx].min(), rna_knn_pred[idx].min())
+        max_val = max(rna_true[idx].max(), dna2rna_rna_pred[idx].max(), rna_mean_pred[idx].max(), rna_knn_pred[idx].max())
         axes[1, 1].plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
-        axes[1, 1].set_title("RNA: Actual vs DNA2RNAVAE Prediction")
+        axes[1, 1].set_title("RNA: Actual vs Predicted")
         axes[1, 1].set_xlabel("Actual RNA")
         axes[1, 1].set_ylabel("Predicted RNA")
+        axes[1, 1].legend()
         axes[1, 1].grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -316,6 +374,8 @@ def plot_correlation_distributions(rna2dna_metrics, dna2rna_metrics, output_dir)
 
 def create_interactive_plot(rna_true, dna_true,
                            rna2dna_dna_pred, dna2rna_rna_pred,
+                           dna_mean_pred, rna_mean_pred,
+                           dna_knn_pred, rna_knn_pred,
                            output_dir):
     """Create interactive plotly visualization"""
     print("Creating interactive comparison plot...")
@@ -324,7 +384,7 @@ def create_interactive_plot(rna_true, dna_true,
     
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=("DNA Prediction (RNA2DNAVAE)", "RNA Prediction (DNA2RNAVAE)", 
+        subplot_titles=("DNA Prediction Comparison", "RNA Prediction Comparison", 
                        "DNA Correlation", "RNA Correlation"),
         specs=[[{"secondary_y": False}, {"secondary_y": False}],
                [{"secondary_y": False}, {"secondary_y": False}]]
@@ -335,20 +395,36 @@ def create_interactive_plot(rna_true, dna_true,
                             line=dict(color='black', width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(y=rna2dna_dna_pred[sample_idx], name="RNA2DNAVAE", 
                             line=dict(color='blue', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(y=dna_mean_pred[sample_idx], name="Mean Imputation", 
+                            line=dict(color='green', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(y=dna_knn_pred[sample_idx], name="k-NN Imputation", 
+                            line=dict(color='purple', width=2)), row=1, col=1)
     
     # RNA reconstruction
     fig.add_trace(go.Scatter(y=rna_true[sample_idx], name="Actual RNA", 
                             line=dict(color='black', width=2)), row=1, col=2)
     fig.add_trace(go.Scatter(y=dna2rna_rna_pred[sample_idx], name="DNA2RNAVAE", 
                             line=dict(color='red', width=2)), row=1, col=2)
+    fig.add_trace(go.Scatter(y=rna_mean_pred[sample_idx], name="Mean Imputation", 
+                            line=dict(color='green', width=2)), row=1, col=2)
+    fig.add_trace(go.Scatter(y=rna_knn_pred[sample_idx], name="k-NN Imputation", 
+                            line=dict(color='purple', width=2)), row=1, col=2)
     
     # DNA correlation
     fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=rna2dna_dna_pred[sample_idx], 
                             mode='markers', name="RNA2DNAVAE", marker=dict(color='blue')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_mean_pred[sample_idx], 
+                            mode='markers', name="Mean", marker=dict(color='green')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=dna_true[sample_idx], y=dna_knn_pred[sample_idx], 
+                            mode='markers', name="k-NN", marker=dict(color='purple')), row=2, col=1)
     
     # RNA correlation
     fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=dna2rna_rna_pred[sample_idx], 
                             mode='markers', name="DNA2RNAVAE", marker=dict(color='red')), row=2, col=2)
+    fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_mean_pred[sample_idx], 
+                            mode='markers', name="Mean", marker=dict(color='green')), row=2, col=2)
+    fig.add_trace(go.Scatter(x=rna_true[sample_idx], y=rna_knn_pred[sample_idx], 
+                            mode='markers', name="k-NN", marker=dict(color='purple')), row=2, col=2)
     
     fig.update_xaxes(title_text="Probe Index", row=1, col=1)
     fig.update_xaxes(title_text="Gene Index", row=1, col=2)
@@ -364,7 +440,7 @@ def create_interactive_plot(rna_true, dna_true,
         width=1200, 
         height=800, 
         hovermode="x unified",
-        title="Directional VAE Imputation Comparison: RNA2DNAVAE vs DNA2RNAVAE"
+        title="Directional VAE vs Baseline Imputation Comparison"
     )
     
     filename = os.path.join(output_dir, 'interactive_comparison.html')
@@ -398,11 +474,22 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Load models and data
-    rna2dna_model, dna2rna_model, val_dataloader, rna2dna_run_id, dna2rna_run_id = load_models_and_data()
+    rna2dna_model, dna2rna_model, val_dataloader, train_dataset, val_dataset, rna2dna_run_id, dna2rna_run_id = load_models_and_data()
     
     if rna2dna_model is None and dna2rna_model is None:
         print("Error: No models loaded. Please train both models first.")
         return
+    
+    # Get baseline predictions
+    print("\n" + "="*80)
+    print("Computing baseline imputation predictions...")
+    print("="*80)
+    
+    # Mean imputation
+    rna_mean_pred, dna_mean_pred = get_mean_imputation_predictions(val_dataset)
+    
+    # KNN imputation
+    rna_knn_pred, dna_knn_pred = get_knn_predictions(train_dataset, val_dataset, n_neighbors=5)
     
     # Get predictions
     results = []
@@ -411,18 +498,32 @@ def main():
         rna_true, dna_true, _, rna2dna_dna_pred = get_predictions(
             rna2dna_model, val_dataloader, 'RNA2DNA'
         )
-        # Compute metrics for DNA prediction
-        dna_metrics = compute_metrics(
+        # Compute metrics for DNA prediction - RNA2DNAVAE
+        dna_metrics_vae = compute_metrics(
             dna_true, rna2dna_dna_pred, "DNA methylation", "RNA2DNAVAE"
         )
-        results.append(dna_metrics)
-        print(f"\nRNA2DNAVAE - DNA Prediction:")
-        print(f"  MAE: {dna_metrics['MAE']:.4f}, MSE: {dna_metrics['MSE']:.4f}, R2: {dna_metrics['R2']:.4f}")
-        print(f"  Pearson r: {dna_metrics['PearsonMean']:.4f} ± {dna_metrics['PearsonStd']:.4f}")
+        results.append(dna_metrics_vae)
+        
+        # Compute metrics for DNA prediction - Mean
+        dna_metrics_mean = compute_metrics(
+            dna_true, dna_mean_pred, "DNA methylation", "Mean Imputation"
+        )
+        results.append(dna_metrics_mean)
+        
+        # Compute metrics for DNA prediction - KNN
+        dna_metrics_knn = compute_metrics(
+            dna_true, dna_knn_pred, "DNA methylation", "k-NN Imputation"
+        )
+        results.append(dna_metrics_knn)
+        
+        print(f"\nDNA Prediction Results:")
+        print(f"  RNA2DNAVAE - MAE: {dna_metrics_vae['MAE']:.4f}, MSE: {dna_metrics_vae['MSE']:.4f}, R2: {dna_metrics_vae['R2']:.4f}, Pearson r: {dna_metrics_vae['PearsonMean']:.4f}")
+        print(f"  Mean Imputation - MAE: {dna_metrics_mean['MAE']:.4f}, MSE: {dna_metrics_mean['MSE']:.4f}, R2: {dna_metrics_mean['R2']:.4f}, Pearson r: {dna_metrics_mean['PearsonMean']:.4f}")
+        print(f"  k-NN Imputation - MAE: {dna_metrics_knn['MAE']:.4f}, MSE: {dna_metrics_knn['MSE']:.4f}, R2: {dna_metrics_knn['R2']:.4f}, Pearson r: {dna_metrics_knn['PearsonMean']:.4f}")
     else:
         rna_true, dna_true = None, None
         rna2dna_dna_pred = None
-        dna_metrics = None
+        dna_metrics_vae = None
     
     if dna2rna_model:
         if rna_true is None:
@@ -432,17 +533,31 @@ def main():
         _, _, dna2rna_rna_pred, _ = get_predictions(
             dna2rna_model, val_dataloader, 'DNA2RNA'
         )
-        # Compute metrics for RNA prediction
-        rna_metrics = compute_metrics(
+        # Compute metrics for RNA prediction - DNA2RNAVAE
+        rna_metrics_vae = compute_metrics(
             rna_true, dna2rna_rna_pred, "RNA expression", "DNA2RNAVAE"
         )
-        results.append(rna_metrics)
-        print(f"\nDNA2RNAVAE - RNA Prediction:")
-        print(f"  MAE: {rna_metrics['MAE']:.4f}, MSE: {rna_metrics['MSE']:.4f}, R2: {rna_metrics['R2']:.4f}")
-        print(f"  Pearson r: {rna_metrics['PearsonMean']:.4f} ± {rna_metrics['PearsonStd']:.4f}")
+        results.append(rna_metrics_vae)
+        
+        # Compute metrics for RNA prediction - Mean
+        rna_metrics_mean = compute_metrics(
+            rna_true, rna_mean_pred, "RNA expression", "Mean Imputation"
+        )
+        results.append(rna_metrics_mean)
+        
+        # Compute metrics for RNA prediction - KNN
+        rna_metrics_knn = compute_metrics(
+            rna_true, rna_knn_pred, "RNA expression", "k-NN Imputation"
+        )
+        results.append(rna_metrics_knn)
+        
+        print(f"\nRNA Prediction Results:")
+        print(f"  DNA2RNAVAE - MAE: {rna_metrics_vae['MAE']:.4f}, MSE: {rna_metrics_vae['MSE']:.4f}, R2: {rna_metrics_vae['R2']:.4f}, Pearson r: {rna_metrics_vae['PearsonMean']:.4f}")
+        print(f"  Mean Imputation - MAE: {rna_metrics_mean['MAE']:.4f}, MSE: {rna_metrics_mean['MSE']:.4f}, R2: {rna_metrics_mean['R2']:.4f}, Pearson r: {rna_metrics_mean['PearsonMean']:.4f}")
+        print(f"  k-NN Imputation - MAE: {rna_metrics_knn['MAE']:.4f}, MSE: {rna_metrics_knn['MSE']:.4f}, R2: {rna_metrics_knn['R2']:.4f}, Pearson r: {rna_metrics_knn['PearsonMean']:.4f}")
     else:
         dna2rna_rna_pred = None
-        rna_metrics = None
+        rna_metrics_vae = None
     
     if rna_true is None or dna_true is None:
         print("Error: Could not load validation data.")
@@ -461,17 +576,20 @@ def main():
     if rna2dna_model and dna2rna_model:
         plot_comparison(
             rna_true, dna_true,
-            rna_true, rna2dna_dna_pred,  # RNA2DNA: original RNA, predicted DNA
-            dna2rna_rna_pred, dna_true,  # DNA2RNA: predicted RNA, original DNA
+            rna2dna_dna_pred, dna2rna_rna_pred,
+            dna_mean_pred, rna_mean_pred,
+            dna_knn_pred, rna_knn_pred,
             output_dir, n_samples=3
         )
         
-        if dna_metrics and rna_metrics:
-            plot_correlation_distributions(dna_metrics, rna_metrics, output_dir)
+        if dna_metrics_vae and rna_metrics_vae:
+            plot_correlation_distributions(dna_metrics_vae, rna_metrics_vae, output_dir)
         
         create_interactive_plot(
             rna_true, dna_true,
             rna2dna_dna_pred, dna2rna_rna_pred,
+            dna_mean_pred, rna_mean_pred,
+            dna_knn_pred, rna_knn_pred,
             output_dir
         )
     
