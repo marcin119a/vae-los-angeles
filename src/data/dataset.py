@@ -2,6 +2,7 @@
 Dataset classes for Multi-Modal VAE
 """
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
@@ -36,4 +37,16 @@ class MultiModalDataset(Dataset):
         beta = torch.tensor(self.beta_data[idx])
         site = torch.tensor(self.primary_site[idx])
         return tpm, beta, site
+
+    @classmethod
+    def from_numpy(cls, tpm_data, beta_data, primary_site):
+        """
+        Creates a dataset from numpy arrays.
+        """
+        df = pd.DataFrame({
+            'tpm_unstranded': list(tpm_data),
+            'beta_value': list(beta_data),
+            'primary_site_encoded': primary_site
+        })
+        return cls(df)
 
