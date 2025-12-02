@@ -71,10 +71,38 @@ def merge_and_normalize_data(rna_df, dna_df, top_n_sites=24):
     """Merge all datasets and normalize"""
     print("\nMerging datasets...")
     
-    # Merge RNA expression with DNA methylation (primary_site already in rna_df)
-    merged_df = pd.merge(rna_df, dna_df, on='case_barcode')
+    # Merge RNA expression with DNA methylation using outer join to capture unmatched records
+    merged_df = pd.merge(rna_df, dna_df, on='case_barcode', how='outer', indicator=True)
     
-    print(f"Merged data shape before filtering: {merged_df.shape}")
+    # Identify and save unmatched records
+    print("\nIdentifying unmatched records...")
+    
+    # RNA only (no matching DNA) - right side has NaN
+    rna_only = merged_df[merged_df['_merge'] == 'left_only'].copy()
+    if len(rna_only) > 0:
+        print(f"Found {len(rna_only)} RNA samples without matching DNA methylation data")
+        rna_only = rna_only[['case_barcode', 'tpm_unstranded', 'primary_site']]
+        os.makedirs('data', exist_ok=True)
+        rna_only.to_pickle('data/rna_only_unmatched.pkl')
+        print(f"  Saved to: data/rna_only_unmatched.pkl")
+    else:
+        print("No RNA-only samples found")
+    
+    # DNA only (no matching RNA) - left side has NaN
+    dna_only = merged_df[merged_df['_merge'] == 'right_only'].copy()
+    if len(dna_only) > 0:
+        print(f"Found {len(dna_only)} DNA methylation samples without matching RNA expression data")
+        dna_only = dna_only[['case_barcode', 'beta_value']]
+        dna_only.to_pickle('data/dna_only_unmatched.pkl')
+        print(f"  Saved to: data/dna_only_unmatched.pkl")
+    else:
+        print("No DNA-only samples found")
+    
+    # Keep only successfully merged records
+    merged_df = merged_df[merged_df['_merge'] == 'both'].copy()
+    merged_df = merged_df.drop(columns=['_merge'])
+    
+    print(f"\nMerged data shape before filtering: {merged_df.shape}")
     
     # Filter to keep only top N most common primary sites
     print(f"\nFiltering to keep only top {top_n_sites} most common primary sites...")
@@ -134,6 +162,9 @@ def main():
     print("\nData preparation complete!")
     print(f"Processed data saved to: data/processed_data.pkl")
     print(f"Label encoder saved to: data/label_encoder.pkl")
+    print(f"\nAdditional files (if any unmatched records):")
+    print(f"  - data/rna_only_unmatched.pkl (RNA samples without DNA)")
+    print(f"  - data/dna_only_unmatched.pkl (DNA samples without RNA)")
 
 
 if __name__ == "__main__":
