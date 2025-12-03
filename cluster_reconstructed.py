@@ -20,6 +20,35 @@ from datetime import datetime
 import glob
 
 
+# Mapping of full class names to short labels for legend
+class_short_labels = {
+    "Hematopoietic and reticuloendothelial systems": "Hemato",
+    "Bronchus and lung": "Lung",
+    "Breast": "Breast",
+    "Kidney": "Kidney",
+    "Brain": "Brain",
+    "Colon": "Colon",
+    "Corpus uteri": "Corpus",
+    "Skin": "Skin",
+    "Prostate gland": "Prostate",
+    "Stomach": "Stomach",
+    "Bladder": "Bladder",
+    "Liver and intrahepatic bile ducts": "Liver",
+    "Pancreas": "Pancreas",
+    "Ovary": "Ovary",
+    "Uterus, NOS": "Uterus",
+    "Cervix uteri": "Cervix",
+    "Esophagus": "Esophagus",
+    "Adrenal gland": "Adrenal",
+    "Other and ill-defined sites": "Other",
+    "Other and unspecified parts of tongue": "Tongue",
+    "Connective, subcutaneous and other soft tissues": "Connective",
+    "Larynx": "Larynx",
+    "Rectum": "Rectum",
+    "Other and ill-defined sites in lip, oral cavity and pharynx": "Oral/Pharynx"
+}
+
+
 def find_latest_reconstruction_files():
     """Find the most recent reconstruction files"""
     rna_files = glob.glob('data/rna_with_reconstructed_dna_*.pkl')
@@ -152,7 +181,7 @@ def perform_dimensionality_reduction(features, method='tsne', n_components=2, ra
 
 
 def plot_clusters_2d(features_2d, labels, title, filename, label_encoder=None, 
-                     figsize=(12, 10), marker_size=50, alpha=0.7):
+                     figsize=(12, 10), marker_size=50, alpha=0.7, label_mapping=None):
     """
     Plot 2D clusters with labels
     
@@ -205,7 +234,7 @@ def plot_clusters_2d(features_2d, labels, title, filename, label_encoder=None,
     
     # Place legend outside plot area
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', 
-              frameon=True, fontsize=9, ncol=1 if n_labels <= 20 else 2)
+              frameon=True, fontsize=9, ncol=1)
     
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -271,7 +300,8 @@ def analyze_rna_only_samples(rna_df, label_encoder, run_timestamp):
         site_labels,
         f't-SNE: RNA-only samples with reconstructed DNA\n(colored by primary site)',
         f'plots/clustering/rna_only_tsne_by_site_{run_timestamp}.png',
-        label_encoder=label_encoder
+        label_encoder=label_encoder,
+        label_mapping=class_short_labels
     )
     
     return features, pca_features, tsne_features
