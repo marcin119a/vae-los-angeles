@@ -12,7 +12,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -111,14 +110,36 @@ def load_models_and_data():
 
 def compute_metrics(modality: str, model_name: str, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     """Compute evaluation metrics for a given modality and model"""
-    similarities = cosine_similarity(y_true, y_pred)
+    # Ensure arrays are 2D: (n_samples, n_features)
+    if y_true.ndim == 1:
+        y_true = y_true.reshape(1, -1)
+    if y_pred.ndim == 1:
+        y_pred = y_pred.reshape(1, -1)
+    
+    # Flatten arrays for MAE, MSE, R2 (sklearn metrics compute across all elements)
+    y_true_flat = y_true.flatten()
+    y_pred_flat = y_pred.flatten()
+    
+    # Compute cosine similarity per sample (vectorized)
+    # Normalize each sample to unit length
+    true_norms = np.linalg.norm(y_true, axis=1, keepdims=True)
+    pred_norms = np.linalg.norm(y_pred, axis=1, keepdims=True)
+    
+    # Avoid division by zero
+    true_normalized = np.where(true_norms > 0, y_true / true_norms, 0)
+    pred_normalized = np.where(pred_norms > 0, y_pred / pred_norms, 0)
+    
+    # Compute cosine similarity for each sample
+    sample_similarities = np.sum(true_normalized * pred_normalized, axis=1)
+    mean_cosine_sim = float(np.mean(sample_similarities))
+    
     return {
         "Modality": modality,
         "Model": model_name,
-        "MAE": mean_absolute_error(y_true, y_pred),
-        "MSE": mean_squared_error(y_true, y_pred),
-        "R2": r2_score(y_true, y_pred),
-        "CosineSimilarity": float(np.diag(similarities).mean())
+        "MAE": mean_absolute_error(y_true_flat, y_pred_flat),
+        "MSE": mean_squared_error(y_true_flat, y_pred_flat),
+        "R2": r2_score(y_true_flat, y_pred_flat),
+        "CosineSimilarity": mean_cosine_sim
     }
 
 
