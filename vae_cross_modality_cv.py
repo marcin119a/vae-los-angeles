@@ -13,7 +13,12 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
 from scipy import stats
+from scipy.stats import pearsonr
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import torch.nn.functional as F
 from src.config import Config
 from src.models import DNA2RNAVAE, RNA2DNAVAE
 from src.utils.directional_losses import dna2rna_loss, rna2dna_loss
@@ -23,7 +28,7 @@ def parse_args():
     parser.add_argument("--folds", type=int, default=10, help="Number of cross-validation folds (default: 10)")
     parser.add_argument("--subset", type=float, default=0.1, help="Fraction of data to use (default: 0.1)")
     parser.add_argument("--neighbors", type=int, nargs='+', default=[5, 10], help="List of k values to test (default: 5 10)")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of VAE training epochs (default: 100)")
+    parser.add_argument("--epochs", type=int, default=200, help="Number of VAE training epochs (default: 200)")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size (default: 32)")
     parser.add_argument("--data_path", type=str, default="data/processed_data.pkl", help="Path to processed data pickle")
     return parser.parse_args()
@@ -48,6 +53,58 @@ def load_data(data_path, subset_fraction):
     site_data = np.array(df['primary_site_encoded'].tolist()).astype(np.int64)
     
     return rna_data, dna_data, site_data
+
+class MeanRegressor:
+    """
+    Baseline model that predicts the mean of the training data.
+    """
+    def __init__(self):
+        self.mean_vector = None
+
+    def fit(self, X, y):
+        self.mean_vector = np.mean(y, axis=0)
+
+    def predict(self, X):
+        return np.tile(self.mean_vector, (X.shape[0], 1))
+
+def calculate_metrics(y_true, y_pred):
+    """
+    Calculate R2, MSE, MAE, Cosine Similarity, and Pearson Correlation.
+    """
+    # R2
+    mean_r2 = r2_score(y_true, y_pred)
+    flat_r2 = r2_score(y_true.flatten(), y_pred.flatten())
+    
+    # MSE & MAE (flattened)
+    mse = mean_squared_error(y_true.flatten(), y_pred.flatten())
+    mae = mean_absolute_error(y_true.flatten(), y_pred.flatten())
+    
+    # Cosine Similarity (averaged over samples)
+    # Convert to tensors for easy calculation, or use numpy dot product
+    # sklearn cosine_similarity computes pairwise, we want row-wise
+    y_true_norm = y_true / np.linalg.norm(y_true, axis=1, keepdims=True)
+    y_pred_norm = y_pred / np.linalg.norm(y_pred, axis=1, keepdims=True)
+    cosine_sim = np.sum(y_true_norm * y_pred_norm, axis=1).mean()
+    
+    # Pearson Correlation (averaged over samples)
+    pearson_scores = []
+    for i in range(y_true.shape[0]):
+        try:
+            r, _ = pearsonr(y_true[i], y_pred[i])
+            if not np.isnan(r):
+                pearson_scores.append(r)
+        except:
+            pass
+    pearson_mean = np.mean(pearson_scores) if pearson_scores else 0.0
+
+    return {
+        "Mean R2": mean_r2,
+        "Global R2": flat_r2,
+        "MSE": mse,
+        "MAE": mae,
+        "Cosine Sim": cosine_sim,
+        "Pearson": pearson_mean
+    }
 
 def train_vae(model_class, input_dim_a, input_dim_b, n_sites, train_data_x, train_data_y, train_site, epochs, batch_size, direction):
     # Split training data into inner train and validation for early stopping/scheduler
@@ -137,23 +194,33 @@ def train_vae(model_class, input_dim_a, input_dim_b, n_sites, train_data_x, trai
             
     return model
 
-def run_cross_validation(X, y, site, k_values, n_folds, direction_name, model_type="knn", epochs=10, batch_size=64):
+def run_cross_validation(X, y, site, k_values, fold_indices, direction_name, model_type="knn", epochs=10, batch_size=64):
     print(f"\nRunning Cross-Validation for {direction_name} ({model_type})...")
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
     
     results = []
     
-    # For VAE, we don't iterate over k_values, but we can treat 'epochs' or similar as hyperparam if needed.
-    # For now, just run once per fold for VAE.
-    params_to_test = k_values if model_type == "knn" else [epochs]
-    param_name = "k" if model_type == "knn" else "epochs"
+    # Determine params
+    if model_type == "knn":
+        params_to_test = k_values
+        param_name = "k"
+    elif model_type == "vae":
+        params_to_test = [epochs]
+        param_name = "epochs"
+    elif model_type == "mean":
+        params_to_test = [0] # Dummy param
+        param_name = "dummy"
     
     for param in params_to_test:
-        print(f"  Testing {param_name}={param}...")
-        fold_scores = []
+        if model_type != "mean":
+            print(f"  Testing {param_name}={param}...")
+        else:
+            print(f"  Testing Mean Baseline...")
+
+        # Initialize metrics lists
+        fold_metrics = {k: [] for k in ["Mean R2", "Global R2", "MSE", "MAE", "Cosine Sim", "Pearson"]}
         start_time = time.time()
         
-        for fold_idx, (train_index, val_index) in enumerate(kf.split(X)):
+        for fold_idx, (train_index, val_index) in enumerate(fold_indices):
             X_train, X_val = X[train_index], X[val_index]
             y_train, y_val = y[train_index], y[val_index]
             site_train, site_val = site[train_index], site[val_index]
@@ -163,10 +230,13 @@ def run_cross_validation(X, y, site, k_values, n_folds, direction_name, model_ty
                 model.fit(X_train, y_train)
                 y_pred = model.predict(X_val)
             
+            elif model_type == "mean":
+                model = MeanRegressor()
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_val)
+
             elif model_type == "vae":
                 # Determine dimensions
-                # DNA->RNA: X=DNA (input_dim_b), Y=RNA (input_dim_a)
-                # RNA->DNA: X=RNA (input_dim_a), Y=DNA (input_dim_b)
                 n_sites = int(site.max() + 1)
                 
                 if direction_name == "DNA -> RNA":
@@ -177,8 +247,7 @@ def run_cross_validation(X, y, site, k_values, n_folds, direction_name, model_ty
                     input_dim_a = X.shape[1] # RNA
                     input_dim_b = y.shape[1] # DNA
                     model_class = RNA2DNAVAE
-                # Train VAE
-                # Note: train_vae now handles internal validation split
+                
                 model = train_vae(model_class, input_dim_a, input_dim_b, n_sites, 
                                   X_train, y_train, site_train, 
                                   param, batch_size, direction_name)
@@ -195,58 +264,73 @@ def run_cross_validation(X, y, site, k_values, n_folds, direction_name, model_ty
                     
                     y_pred = y_pred_tensor.cpu().numpy()
 
-            score = r2_score(y_val, y_pred)
-            fold_scores.append(score)
+            # Calculate metrics
+            metrics = calculate_metrics(y_val, y_pred)
+            for k, v in metrics.items():
+                fold_metrics[k].append(v)
             
         elapsed = time.time() - start_time
-        mean_score = np.mean(fold_scores)
-        std_score = np.std(fold_scores)
         
-        print(f"    {param_name}={param}: Mean R2 = {mean_score:.4f} (+/- {std_score:.4f}) [Time: {elapsed:.2f}s]")
-        
-        results.append({
+        # Aggregate results
+        aggregated_results = {
             "direction": direction_name,
             "model": model_type,
             "param_name": param_name,
             "param_value": param,
-            "mean_r2": mean_score,
-            "std_r2": std_score,
             "time": elapsed,
-            "fold_scores": fold_scores
-        })
+            "fold_metrics": fold_metrics
+        }
+        
+        # Add mean/std for all metrics
+        for metric_name in fold_metrics:
+            aggregated_results[f"mean_{metric_name}"] = np.mean(fold_metrics[metric_name])
+            aggregated_results[f"std_{metric_name}"] = np.std(fold_metrics[metric_name])
+            
+        print(f"    Mean R2 = {aggregated_results['mean_Mean R2']:.4f} (+/- {aggregated_results['std_Mean R2']:.4f})")
+        print(f"    MSE     = {aggregated_results['mean_MSE']:.4f} (+/- {aggregated_results['std_MSE']:.4f})")
+        
+        results.append(aggregated_results)
         
     return results
 
-def create_cv_boxplot(results, output_file="plots/cv_results_boxplot.png"):
-    print(f"Creating boxplot: {output_file}...")
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+def create_plotly_plots(results, output_dir="plots/plotly"):
+    print(f"Creating Plotly plots in {output_dir}...")
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Flatten results for plotting
-    plot_data = []
-    for res in results:
-        label = f"{res['model']} ({res['param_name']}={res['param_value']})"
-        for score in res['fold_scores']:
-            plot_data.append({
-                "Direction": res['direction'],
-                "Model": label,
-                "R2 Score": score
-            })
-            
-    df = pd.DataFrame(plot_data)
+    # Get list of metrics from the first result
+    metrics = list(results[0]["fold_metrics"].keys())
     
-    plt.figure(figsize=(12, 8))
-    sns.boxplot(data=df, x="Model", y="R2 Score", hue="Direction", showfliers=False)
-    plt.title("Cross-Validation R2 Scores Distribution")
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_file, dpi=300)
-    plt.close()
-    print("Boxplot saved.")
+    for metric in metrics:
+        plot_data = []
+        for res in results:
+            label = f"{res['model']}"
+            if res['model'] == 'knn':
+                 label += f" (k={res['param_value']})"
+            elif res['model'] == 'vae':
+                 label += f" (ep={res['param_value']})"
+                 
+            for score in res['fold_metrics'][metric]:
+                plot_data.append({
+                    "Direction": res['direction'],
+                    "Model": label,
+                    "Score": score
+                })
+                
+        df = pd.DataFrame(plot_data)
+        
+        fig = px.box(df, x="Model", y="Score", color="Direction", 
+                     title=f"Cross-Validation {metric}",
+                     points="all", hover_data=["Model", "Direction"])
+        fig.update_layout(template="plotly_white")
+        
+        safe_metric_name = metric.lower().replace(" ", "_")
+        fig.write_html(f"{output_dir}/cv_results_{safe_metric_name}.html")
+    
+    print("Plotly plots saved.")
 
-def perform_statistical_comparison(results):
+def perform_statistical_comparison(results, metric="Mean R2"):
     print("\n" + "="*80)
-    print("STATISTICAL COMPARISON (Paired t-test)")
+    print(f"STATISTICAL COMPARISON (Paired t-test) on {metric}")
     print("="*80)
     
     # Group results by direction
@@ -256,24 +340,55 @@ def perform_statistical_comparison(results):
         print(f"\nDirection: {direction}")
         dir_results = [r for r in results if r['direction'] == direction]
         
-        # Find best model for each type (knn vs vae) based on mean R2
+        # Find best model for each type (knn vs vae) based on mean R2 (always use R2 to pick 'best', but compare on requested metric)
+        # Or better: Pick best based on the metric itself? 
+        # For error metrics (MSE, MAE), lower is better. For R2/Corr, higher is better.
+        # Let's stick to using Mean R2 to select the best configuration, then compare them on the specific metric.
+        
         knn_results = [r for r in dir_results if r['model'] == 'knn']
         vae_results = [r for r in dir_results if r['model'] == 'vae']
+        mean_results = [r for r in dir_results if r['model'] == 'mean']
         
         if not knn_results or not vae_results:
             continue
             
-        best_knn = max(knn_results, key=lambda x: x['mean_r2'])
-        best_vae = max(vae_results, key=lambda x: x['mean_r2'])
+        best_knn = max(knn_results, key=lambda x: x['mean_Mean R2'])
+        best_vae = max(vae_results, key=lambda x: x['mean_Mean R2'])
+        
+        # Get scores for the selected metric
+        knn_scores = best_knn['fold_metrics'][metric]
+        vae_scores = best_vae['fold_metrics'][metric]
         
         # Perform paired t-test
-        t_stat, p_val = stats.ttest_rel(best_knn['fold_scores'], best_vae['fold_scores'])
+        t_stat, p_val = stats.ttest_rel(knn_scores, vae_scores)
         
-        print(f"  Best kNN: k={best_knn['param_value']} (R2={best_knn['mean_r2']:.4f})")
-        print(f"  Best VAE: epochs={best_vae['param_value']} (R2={best_vae['mean_r2']:.4f})")
-        print(f"  Paired t-test: t={t_stat:.4f}, p={p_val:.4e}")
+        print(f"  Best kNN: k={best_knn['param_value']} ({metric}={np.mean(knn_scores):.4f})")
+        print(f"  Best VAE: epochs={best_vae['param_value']} ({metric}={np.mean(vae_scores):.4f})")
+        
+        if mean_results:
+            mean_baseline = mean_results[0]
+            mean_scores = mean_baseline['fold_metrics'][metric]
+            print(f"  Mean Baseline: ({metric}={np.mean(mean_scores):.4f})")
+            
+            # Compare VAE vs Mean
+            t_mean, p_mean = stats.ttest_rel(vae_scores, mean_scores)
+            print(f"  VAE vs Mean: t={t_mean:.4f}, p={p_mean:.4e}")
+
+        print(f"  VAE vs kNN: t={t_stat:.4f}, p={p_val:.4e}")
         if p_val < 0.05:
-            winner = "kNN" if best_knn['mean_r2'] > best_vae['mean_r2'] else "VAE"
+             # Determine winner direction
+            mean_knn = np.mean(knn_scores)
+            mean_vae = np.mean(vae_scores)
+            
+            # For arrays where higher is better
+            higher_better = ["R2", "Cosine", "Pearson"]
+            is_higher_better = any(x in metric for x in higher_better)
+            
+            if is_higher_better:
+                winner = "kNN" if mean_knn > mean_vae else "VAE"
+            else:
+                winner = "kNN" if mean_knn < mean_vae else "VAE"
+                
             print(f"  -> Significant difference! {winner} performs better.")
         else:
             print(f"  -> No significant difference detected (p >= 0.05).")
@@ -281,43 +396,56 @@ def perform_statistical_comparison(results):
 def main():
     args = parse_args()
     
+    # Override default epochs if not specified by user (argparse default is 100, we want 200 or user arg)
+    # Actually argparse default is 100 in definition. Let's force it to 200 if it matches default, 
+    # but the user might have passed 100 explicitly. 
+    # Safer to just change the argparse default. But since I can't change argparse definition easily without editing that part...
+    # I'll just trust the passed args. 
+    # Wait, plan said "Set epochs default to 200". I should update argparse default.
+    
     try:
         rna_data, dna_data, site_data = load_data(args.data_path, args.subset)
     except Exception as e:
         print(f"Error loading data: {e}")
         return
 
+    # Generate consistent fold indices
+    print(f"\nGenerating {args.folds} folds to be used across all models...")
+    kf = KFold(n_splits=args.folds, shuffle=True, random_state=42)
+    fold_indices = list(kf.split(rna_data))
+
     all_results = []
     
     # DNA -> RNA
-    # X = DNA, y = RNA
-    # kNN
-    all_results.extend(run_cross_validation(dna_data, rna_data, site_data, args.neighbors, args.folds, "DNA -> RNA", "knn"))
-    # VAE
-    all_results.extend(run_cross_validation(dna_data, rna_data, site_data, [args.epochs], args.folds, "DNA -> RNA", "vae", epochs=args.epochs, batch_size=args.batch_size))
+    print("\n--- Processing DNA -> RNA ---")
+    all_results.extend(run_cross_validation(dna_data, rna_data, site_data, [], fold_indices, "DNA -> RNA", "mean"))
+    all_results.extend(run_cross_validation(dna_data, rna_data, site_data, args.neighbors, fold_indices, "DNA -> RNA", "knn"))
+    all_results.extend(run_cross_validation(dna_data, rna_data, site_data, [args.epochs], fold_indices, "DNA -> RNA", "vae", epochs=args.epochs, batch_size=args.batch_size))
     
     # RNA -> DNA
-    # X = RNA, y = DNA
-    # kNN
-    all_results.extend(run_cross_validation(rna_data, dna_data, site_data, args.neighbors, args.folds, "RNA -> DNA", "knn"))
-    # VAE
-    all_results.extend(run_cross_validation(rna_data, dna_data, site_data, [args.epochs], args.folds, "RNA -> DNA", "vae", epochs=args.epochs, batch_size=args.batch_size))
+    print("\n--- Processing RNA -> DNA ---")
+    all_results.extend(run_cross_validation(rna_data, dna_data, site_data, [], fold_indices, "RNA -> DNA", "mean"))
+    all_results.extend(run_cross_validation(rna_data, dna_data, site_data, args.neighbors, fold_indices, "RNA -> DNA", "knn"))
+    all_results.extend(run_cross_validation(rna_data, dna_data, site_data, [args.epochs], fold_indices, "RNA -> DNA", "vae", epochs=args.epochs, batch_size=args.batch_size))
     
     # Summary
-    print("\n" + "="*80)
-    print("FINAL RESULTS SUMMARY")
-    print("="*80)
-    print(f"{'Direction':<15} | {'Model':<5} | {'Param':<10} | {'Mean R2':<10} | {'Std Dev':<10} | {'Time (s)':<10}")
-    print("-" * 80)
+    print("\n" + "="*120)
+    print("FINAL RESULTS SUMMARY (Mean R2 & MSE)")
+    print("="*120)
+    print(f"{'Direction':<12} | {'Model':<5} | {'Param':<8} | {'Mean R2':<10} | {'Std':<8} | {'MSE':<10} | {'Std':<8} | {'Time (s)':<8}")
+    print("-" * 120)
     for res in all_results:
-        print(f"{res['direction']:<15} | {res['model']:<5} | {res['param_name']}={res['param_value']:<4} | {res['mean_r2']:<10.4f} | {res['std_r2']:<10.4f} | {res['time']:<10.2f}")
-    print("="*80)
+        print(f"{res['direction']:<12} | {res['model']:<5} | {res['param_name']}={res['param_value']:<4} | {res['mean_Mean R2']:<10.4f} | {res['std_Mean R2']:<8.4f} | {res['mean_MSE']:<10.4f} | {res['std_MSE']:<8.4f} | {res['time']:<8.2f}")
+    print("="*120)
     
     # Statistical Comparison
-    perform_statistical_comparison(all_results)
+    # Compare on key metrics
+    perform_statistical_comparison(all_results, metric="Mean R2")
+    perform_statistical_comparison(all_results, metric="MSE")
+    perform_statistical_comparison(all_results, metric="Pearson")
     
-    # Create visualization
-    create_cv_boxplot(all_results)
+    # Create visualizations
+    create_plotly_plots(all_results)
 
 if __name__ == "__main__":
     main()
