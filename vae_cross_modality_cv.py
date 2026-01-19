@@ -20,8 +20,9 @@ from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import torch.nn.functional as F
 from src.config import Config
-from src.models import DNA2RNAVAE, RNA2DNAVAE
+from src.models import DNA2RNAVAE, RNA2DNAVAE, DNA2RNAAE, RNA2DNAAE
 from src.utils.directional_losses import dna2rna_loss, rna2dna_loss
+from src.utils.ae_losses import dna2rna_ae_loss, rna2dna_ae_loss
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Cross-validate DNA/RNA models using kNN and VAEs.")
@@ -194,6 +195,93 @@ def train_vae(model_class, input_dim_a, input_dim_b, n_sites, train_data_x, trai
             
     return model
 
+def train_ae(model_class, input_dim_a, input_dim_b, n_sites, train_data_x, train_data_y, train_site, epochs, batch_size, direction):
+    # Split training data into inner train and validation for early stopping/scheduler
+    # Use 10% of training data for validation
+    x_train, x_val, y_train, y_val, site_train, site_val = train_test_split(
+        train_data_x, train_data_y, train_site, test_size=0.1, random_state=42
+    )
+    
+    # Create datasets
+    train_dataset = TensorDataset(torch.FloatTensor(x_train), torch.FloatTensor(y_train), torch.LongTensor(site_train))
+    val_dataset = TensorDataset(torch.FloatTensor(x_val), torch.FloatTensor(y_val), torch.LongTensor(site_val))
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    
+    # Initialize model
+    model = model_class(input_dim_a, input_dim_b, n_sites, Config.LATENT_DIM).to(Config.DEVICE)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=Config.LR_SCHEDULER_FACTOR, patience=Config.LR_SCHEDULER_PATIENCE)
+    
+    # Early stopping parameters
+    patience = Config.PATIENCE
+    best_val_loss = float('inf')
+    trigger_times = 0
+    best_model_state = None
+    
+    # Train
+    model.train()
+    for epoch in range(epochs):
+        total_train_loss = 0
+        
+        # Training loop
+        model.train()
+        for batch_x, batch_y, batch_site in train_loader:
+            batch_x, batch_y, batch_site = batch_x.to(Config.DEVICE), batch_y.to(Config.DEVICE), batch_site.to(Config.DEVICE)
+            
+            if direction == "DNA -> RNA":
+                # X=DNA, Y=RNA. Model expects (dna, site) -> rna
+                recon, _ = model(dna=batch_x, site=batch_site)
+                loss, _ = dna2rna_ae_loss(recon, batch_y)
+            else:
+                # X=RNA, Y=DNA. Model expects (rna, site) -> dna
+                recon, _ = model(rna=batch_x, site=batch_site)
+                loss, _ = rna2dna_ae_loss(recon, batch_y)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_train_loss += loss.item()
+            
+        # Validation loop
+        model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch_x, batch_y, batch_site in val_loader:
+                batch_x, batch_y, batch_site = batch_x.to(Config.DEVICE), batch_y.to(Config.DEVICE), batch_site.to(Config.DEVICE)
+                
+                if direction == "DNA -> RNA":
+                    recon, _ = model(dna=batch_x, site=batch_site)
+                    loss, _ = dna2rna_ae_loss(recon, batch_y)
+                else:
+                    recon, _ = model(rna=batch_x, site=batch_site)
+                    loss, _ = rna2dna_ae_loss(recon, batch_y)
+                
+                total_val_loss += loss.item()
+        
+        avg_val_loss = total_val_loss / len(val_loader)
+        
+        # Step scheduler
+        scheduler.step(avg_val_loss)
+        
+        # Early stopping
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_model_state = model.state_dict()
+            trigger_times = 0
+        else:
+            trigger_times += 1
+            if trigger_times >= patience:
+                # Early stopping
+                break
+    
+    # Load best model
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+            
+    return model
+
 def run_cross_validation(X, y, site, k_values, fold_indices, direction_name, model_type="knn", epochs=10, batch_size=64):
     print(f"\nRunning Cross-Validation for {direction_name} ({model_type})...")
     
@@ -204,6 +292,9 @@ def run_cross_validation(X, y, site, k_values, fold_indices, direction_name, mod
         params_to_test = k_values
         param_name = "k"
     elif model_type == "vae":
+        params_to_test = [epochs]
+        param_name = "epochs"
+    elif model_type == "ae":
         params_to_test = [epochs]
         param_name = "epochs"
     elif model_type == "mean":
@@ -264,6 +355,35 @@ def run_cross_validation(X, y, site, k_values, fold_indices, direction_name, mod
                     
                     y_pred = y_pred_tensor.cpu().numpy()
 
+            elif model_type == "ae":
+                # Determine dimensions
+                n_sites = int(site.max() + 1)
+                
+                if direction_name == "DNA -> RNA":
+                    input_dim_a = y.shape[1] # RNA
+                    input_dim_b = X.shape[1] # DNA
+                    model_class = DNA2RNAAE
+                else:
+                    input_dim_a = X.shape[1] # RNA
+                    input_dim_b = y.shape[1] # DNA
+                    model_class = RNA2DNAAE
+                
+                model = train_ae(model_class, input_dim_a, input_dim_b, n_sites, 
+                                 X_train, y_train, site_train, 
+                                 param, batch_size, direction_name)
+                
+                model.eval()
+                with torch.no_grad():
+                    X_val_tensor = torch.tensor(X_val).to(Config.DEVICE)
+                    site_val_tensor = torch.tensor(site_val).to(Config.DEVICE)
+                    
+                    if direction_name == "DNA -> RNA":
+                        y_pred_tensor, _ = model(dna=X_val_tensor, site=site_val_tensor)
+                    else:
+                        y_pred_tensor, _ = model(rna=X_val_tensor, site=site_val_tensor)
+                    
+                    y_pred = y_pred_tensor.cpu().numpy()
+
             # Calculate metrics
             metrics = calculate_metrics(y_val, y_pred)
             for k, v in metrics.items():
@@ -308,6 +428,8 @@ def create_plotly_plots(results, output_dir="plots/plotly"):
                  label += f" (k={res['param_value']})"
             elif res['model'] == 'vae':
                  label += f" (ep={res['param_value']})"
+            elif res['model'] == 'ae':
+                 label += f" (ep={res['param_value']})"
                  
             for score in res['fold_metrics'][metric]:
                 plot_data.append({
@@ -347,6 +469,7 @@ def perform_statistical_comparison(results, metric="Mean R2"):
         
         knn_results = [r for r in dir_results if r['model'] == 'knn']
         vae_results = [r for r in dir_results if r['model'] == 'vae']
+        ae_results = [r for r in dir_results if r['model'] == 'ae']
         mean_results = [r for r in dir_results if r['model'] == 'mean']
         
         if not knn_results or not vae_results:
@@ -364,6 +487,19 @@ def perform_statistical_comparison(results, metric="Mean R2"):
         
         print(f"  Best kNN: k={best_knn['param_value']} ({metric}={np.mean(knn_scores):.4f})")
         print(f"  Best VAE: epochs={best_vae['param_value']} ({metric}={np.mean(vae_scores):.4f})")
+        
+        if ae_results:
+            best_ae = max(ae_results, key=lambda x: x['mean_Mean R2'])
+            ae_scores = best_ae['fold_metrics'][metric]
+            print(f"  Best AE: epochs={best_ae['param_value']} ({metric}={np.mean(ae_scores):.4f})")
+            
+            # Compare AE vs VAE
+            t_ae_vae, p_ae_vae = stats.ttest_rel(ae_scores, vae_scores)
+            print(f"  AE vs VAE: t={t_ae_vae:.4f}, p={p_ae_vae:.4e}")
+            
+            # Compare AE vs kNN
+            t_ae_knn, p_ae_knn = stats.ttest_rel(ae_scores, knn_scores)
+            print(f"  AE vs kNN: t={t_ae_knn:.4f}, p={p_ae_knn:.4e}")
         
         if mean_results:
             mean_baseline = mean_results[0]
@@ -421,12 +557,14 @@ def main():
     all_results.extend(run_cross_validation(dna_data, rna_data, site_data, [], fold_indices, "DNA -> RNA", "mean"))
     all_results.extend(run_cross_validation(dna_data, rna_data, site_data, args.neighbors, fold_indices, "DNA -> RNA", "knn"))
     all_results.extend(run_cross_validation(dna_data, rna_data, site_data, [args.epochs], fold_indices, "DNA -> RNA", "vae", epochs=args.epochs, batch_size=args.batch_size))
+    all_results.extend(run_cross_validation(dna_data, rna_data, site_data, [args.epochs], fold_indices, "DNA -> RNA", "ae", epochs=args.epochs, batch_size=args.batch_size))
     
     # RNA -> DNA
     print("\n--- Processing RNA -> DNA ---")
     all_results.extend(run_cross_validation(rna_data, dna_data, site_data, [], fold_indices, "RNA -> DNA", "mean"))
     all_results.extend(run_cross_validation(rna_data, dna_data, site_data, args.neighbors, fold_indices, "RNA -> DNA", "knn"))
     all_results.extend(run_cross_validation(rna_data, dna_data, site_data, [args.epochs], fold_indices, "RNA -> DNA", "vae", epochs=args.epochs, batch_size=args.batch_size))
+    all_results.extend(run_cross_validation(rna_data, dna_data, site_data, [args.epochs], fold_indices, "RNA -> DNA", "ae", epochs=args.epochs, batch_size=args.batch_size))
     
     # Summary
     print("\n" + "="*120)
