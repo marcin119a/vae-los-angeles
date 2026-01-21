@@ -284,8 +284,13 @@ def apply_mean_imputation(train_df, rna_only_df, dna_only_df):
     return rna_only_imputed, dna_only_imputed
 
 
-def apply_knn_imputation(train_df, rna_only_df, dna_only_df, n_neighbors=5):
-    """Apply KNN imputation to unmatched samples"""
+def apply_knn_imputation(train_df, rna_only_df, dna_only_df, label_encoder, n_neighbors=5):
+    """Apply KNN imputation to unmatched samples.
+
+    For RNA-only samples, the KNN that imputes DNA is additionally conditioned
+    on the primary site encoded with the provided label encoder (when this
+    information is available for both training and RNA-only sets).
+    """
     print("\n" + "="*80)
     print(f"APPLYING KNN IMPUTATION (k={n_neighbors})")
     print("="*80)
@@ -293,22 +298,70 @@ def apply_knn_imputation(train_df, rna_only_df, dna_only_df, n_neighbors=5):
     # Prepare training data
     train_rna = np.array(train_df['tpm_unstranded'].tolist()).astype(np.float32)
     train_dna = np.array(train_df['beta_value'].tolist()).astype(np.float32)
+
+    # Prepare primary site encodings for training data (if available)
+    train_site_encoded = None
+    if 'primary_site_encoded' in train_df.columns:
+        train_site_encoded = train_df['primary_site_encoded'].to_numpy().astype(np.int32)
+    elif 'primary_site' in train_df.columns and label_encoder is not None:
+        # Keep only samples with primary_site present in the encoder
+        mask = train_df['primary_site'].isin(label_encoder.classes_)
+        if not mask.all():
+            train_df = train_df[mask].copy()
+            train_rna = np.array(train_df['tpm_unstranded'].tolist()).astype(np.float32)
+            train_dna = np.array(train_df['beta_value'].tolist()).astype(np.float32)
+        train_site_encoded = label_encoder.transform(train_df['primary_site']).astype(np.int32)
     
-    # Apply to RNA-only samples (impute DNA from RNA)
+    # Apply to RNA-only samples (impute DNA from RNA (+ primary site when available))
     rna_only_imputed = rna_only_df.copy() if rna_only_df is not None else None
     if rna_only_imputed is not None:
         print(f"  Imputing DNA for {len(rna_only_imputed)} RNA-only samples...")
+
+        # Get RNA features
         rna_val = np.array(rna_only_imputed['tpm_unstranded'].tolist()).astype(np.float32)
-        
-        # Fit KNN: DNA = f(RNA)
+
+        # Get primary site encodings for RNA-only (if possible)
+        rna_only_site_encoded = None
+        if 'primary_site_encoded' in rna_only_imputed.columns:
+            rna_only_site_encoded = rna_only_imputed['primary_site_encoded'].to_numpy().astype(np.int32)
+        elif 'primary_site' in rna_only_imputed.columns and label_encoder is not None:
+            mask = rna_only_imputed['primary_site'].isin(label_encoder.classes_)
+            if not mask.all():
+                # Drop samples with sites not present in the encoder
+                dropped = (~mask).sum()
+                print(f"  Dropping {dropped} RNA-only samples with unknown primary_site.")
+                rna_only_imputed = rna_only_imputed[mask].copy()
+                rna_val = np.array(rna_only_imputed['tpm_unstranded'].tolist()).astype(np.float32)
+            if len(rna_only_imputed) > 0:
+                rna_only_site_encoded = label_encoder.transform(rna_only_imputed['primary_site']).astype(np.int32)
+
+        # Decide whether we can condition on primary site
+        if train_site_encoded is not None and rna_only_site_encoded is not None:
+            print("  Using primary_site encoding as additional feature for KNN (RNA->DNA).")
+            # Append site index as an additional feature
+            train_features = np.concatenate(
+                [train_rna, train_site_encoded.reshape(-1, 1)],
+                axis=1
+            )
+            rna_val_features = np.concatenate(
+                [rna_val, rna_only_site_encoded.reshape(-1, 1)],
+                axis=1
+            )
+        else:
+            print("  Primary site information not available for both train and RNA-only;")
+            print("  falling back to KNN conditioned only on RNA.")
+            train_features = train_rna
+            rna_val_features = rna_val
+
+        # Fit KNN: DNA = f(RNA (+ site))
         knn_dna = KNeighborsRegressor(n_neighbors=n_neighbors, n_jobs=-1)
-        knn_dna.fit(train_rna, train_dna)
-        dna_imputed = knn_dna.predict(rna_val)
-        
+        knn_dna.fit(train_features, train_dna)
+        dna_imputed = knn_dna.predict(rna_val_features)
+
         rna_only_imputed['imputed_beta_value'] = list(dna_imputed)
         print(f"✓ Applied KNN imputation to {len(rna_only_imputed)} RNA-only samples")
     
-    # Apply to DNA-only samples (impute RNA from DNA)
+    # Apply to DNA-only samples (impute RNA from DNA) – unchanged, does not use primary site
     dna_only_imputed = dna_only_df.copy() if dna_only_df is not None else None
     if dna_only_imputed is not None:
         print(f"  Imputing RNA for {len(dna_only_imputed)} DNA-only samples...")
@@ -428,8 +481,10 @@ def main():
     # Apply Mean imputation
     rna_only_mean, dna_only_mean = apply_mean_imputation(train_df, rna_only_df, dna_only_df)
     
-    # Apply KNN imputation
-    rna_only_knn, dna_only_knn = apply_knn_imputation(train_df, rna_only_df, dna_only_df, n_neighbors=5)
+    # Apply KNN imputation (RNA-only KNN is conditioned on primary_site encoding)
+    rna_only_knn, dna_only_knn = apply_knn_imputation(
+        train_df, rna_only_df, dna_only_df, label_encoder, n_neighbors=5
+    )
     
     # Analyze with Mean imputation
     if rna_only_mean is not None and len(rna_only_mean) > 0:
