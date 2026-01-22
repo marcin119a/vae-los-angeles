@@ -6,6 +6,7 @@ from .encoders import EncoderA, EncoderB, EncoderC
 from .decoders import DecoderA, DecoderB, DecoderC
 from .directional_vae import RNA2DNAVAE, DNA2RNAVAE
 from .directional_ae import RNA2DNAAE, DNA2RNAAE
+from .cvae import RNACVAE, DNACVAE
 
 __all__ = [
     'MultiModalVAE',
@@ -13,6 +14,7 @@ __all__ = [
     'EncoderA', 'EncoderB', 'EncoderC',
     'DecoderA', 'DecoderB', 'DecoderC',
     'RNA2DNAVAE', 'DNA2RNAVAE',
-    'RNA2DNAAE', 'DNA2RNAAE'
+    'RNA2DNAAE', 'DNA2RNAAE',
+    'RNACVAE', 'DNACVAE'
 ]
 
