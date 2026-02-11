@@ -38,6 +38,16 @@ def load_models(label_encoder):
     """Load trained directional models"""
     rna2dna_run_id, dna2rna_run_id = get_run_ids()
     n_sites = len(label_encoder.classes_)
+
+    # Runtime overrides (useful on Kaggle and for ad-hoc runs).
+    if os.getenv("KAGGLE_KERNEL_RUN_TYPE") is not None and "DEVICE" not in os.environ:
+        Config.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif "DEVICE" in os.environ:
+        Config.DEVICE = torch.device(os.environ["DEVICE"])
+
+    Config.INPUT_DIM_A = int(os.getenv("INPUT_DIM_A", Config.INPUT_DIM_A))
+    Config.INPUT_DIM_B = int(os.getenv("INPUT_DIM_B", Config.INPUT_DIM_B))
+    Config.LATENT_DIM = int(os.getenv("LATENT_DIM", Config.LATENT_DIM))
     
     # Load RNA2DNAVAE model
     rna2dna_model = None
