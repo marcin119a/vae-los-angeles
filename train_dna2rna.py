@@ -163,7 +163,16 @@ def main():
     # Prepare dataloaders
     train_dataloader, val_dataloader = prepare_dataloaders(merged_df)
     
-    # Initialize model
+    # Initialize model (allow env overrides, e.g. on Kaggle)
+    if os.getenv("KAGGLE_KERNEL_RUN_TYPE") is not None and "DEVICE" not in os.environ:
+        Config.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif "DEVICE" in os.environ:
+        Config.DEVICE = torch.device(os.environ["DEVICE"])
+
+    Config.INPUT_DIM_A = int(os.getenv("INPUT_DIM_A", Config.INPUT_DIM_A))
+    Config.INPUT_DIM_B = int(os.getenv("INPUT_DIM_B", Config.INPUT_DIM_B))
+    Config.LATENT_DIM = int(os.getenv("LATENT_DIM", Config.LATENT_DIM))
+
     print(f"\nInitializing DNA2RNAVAE model on {Config.DEVICE}...")
     model = DNA2RNAVAE(
         Config.INPUT_DIM_A,  # RNA dimension
