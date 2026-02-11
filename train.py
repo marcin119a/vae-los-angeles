@@ -207,7 +207,16 @@ def main():
     # Compute class weights for balanced classification loss
     class_weights = compute_class_weights(train_df, n_sites)
     
-    # Initialize model
+    # Initialize model (allow env overrides, e.g. on Kaggle)
+    if os.getenv("KAGGLE_KERNEL_RUN_TYPE") is not None and "DEVICE" not in os.environ:
+        Config.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif "DEVICE" in os.environ:
+        Config.DEVICE = torch.device(os.environ["DEVICE"])
+
+    Config.INPUT_DIM_A = int(os.getenv("INPUT_DIM_A", Config.INPUT_DIM_A))
+    Config.INPUT_DIM_B = int(os.getenv("INPUT_DIM_B", Config.INPUT_DIM_B))
+    Config.LATENT_DIM = int(os.getenv("LATENT_DIM", Config.LATENT_DIM))
+
     print(f"\nInitializing model on {Config.DEVICE}...")
     model = MultiModalVAE(
         Config.INPUT_DIM_A, 
