@@ -18,6 +18,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.neighbors import KNeighborsRegressor
 from datetime import datetime
+import sys
+from pathlib import Path
+
+# Add project root to python path to allow importing from src
+project_root = str(Path(__file__).parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 from src.config import Config
 
 # Mapping of full class names to short labels for legend
@@ -384,11 +392,42 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
         features, method='both', n_components=2
     )
     
+    # Calculate Silhouette scores
+    pca_score = None
+    tsne_score = None
+    if len(np.unique(site_labels)) > 1:
+        from sklearn.metrics import silhouette_score
+        from sklearn.neighbors import NearestNeighbors
+        
+        def calculate_nh(feat, lab, k=5):
+            if len(feat) < k + 1: return 0.0
+            nn = NearestNeighbors(n_neighbors=k+1).fit(feat)
+            ind = nn.kneighbors(feat, return_distance=False)[:, 1:]
+            lab = np.array(lab)
+            return np.mean([np.mean(lab[i] == lab[idx]) for i, idx in enumerate(ind)])
+            
+        orig_score = silhouette_score(features, site_labels)
+        pca_score = silhouette_score(pca_features, site_labels)
+        tsne_score = silhouette_score(tsne_features, site_labels)
+        orig_nh = calculate_nh(features, site_labels)
+        pca_nh = calculate_nh(pca_features, site_labels)
+        tsne_nh = calculate_nh(tsne_features, site_labels)
+        
+        pca_title = f'PCA: {sample_type} samples ({method_name} imputation)\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nPCA Silh: {pca_score:.3f} | PCA NH: {pca_nh:.3f}'
+        tsne_title = f't-SNE: {sample_type} samples ({method_name} imputation)\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nt-SNE Silh: {tsne_score:.3f} | t-SNE NH: {tsne_nh:.3f}'
+        
+        print(f"\n  Original features - Silhouette: {orig_score:.3f}, NH: {orig_nh:.3f}")
+        print(f"  PCA features - Silhouette: {pca_score:.3f}, NH: {pca_nh:.3f}")
+        print(f"  t-SNE features - Silhouette: {tsne_score:.3f}, NH: {tsne_nh:.3f}")
+    else:
+        pca_title = f'PCA: {sample_type} samples ({method_name} imputation)\n(colored by primary site)'
+        tsne_title = f't-SNE: {sample_type} samples ({method_name} imputation)\n(colored by primary site)'
+        
     # Plot PCA
     plot_clusters_2d(
         pca_features,
         site_labels,
-        f'PCA: {sample_type} samples ({method_name} imputation)\n(colored by primary site)',
+        pca_title,
         f'plots/clustering/{sample_type.lower().replace("-", "_")}_pca_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
         label_encoder=label_encoder
     )
@@ -397,7 +436,7 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
     plot_clusters_2d(
         tsne_features,
         site_labels,
-        f't-SNE: {sample_type} samples ({method_name} imputation)\n(colored by primary site)',
+        tsne_title,
         f'plots/clustering/{sample_type.lower().replace("-", "_")}_tsne_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
         label_encoder=label_encoder
     )
