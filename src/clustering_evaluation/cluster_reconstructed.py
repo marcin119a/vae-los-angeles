@@ -8,6 +8,13 @@ This script performs dimensionality reduction on:
 Visualizes the results with primary site labels where available.
 """
 import os
+import sys
+from pathlib import Path
+
+# Add project root to python path to allow importing from src
+project_root = str(Path(__file__).parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 import pickle
 import numpy as np
 import pandas as pd
@@ -290,50 +297,46 @@ def analyze_rna_only_samples(rna_df, label_encoder, run_timestamp):
     tsne_score = None
     if len(np.unique(site_labels)) > 1:
         from sklearn.metrics import silhouette_score
-        from sklearn.neighbors import NearestNeighbors
+        from sklearn.preprocessing import StandardScaler
+        from src.clustering_evaluation.metrics_utils import calculate_neighborhood_hit
         
-        def calculate_nh(feat, lab, k=5):
-            if len(feat) < k + 1: return 0.0
-            nn = NearestNeighbors(n_neighbors=k+1).fit(feat)
-            ind = nn.kneighbors(feat, return_distance=False)[:, 1:]
-            lab = np.array(lab)
-            return np.mean([np.mean(lab[i] == lab[idx]) for i, idx in enumerate(ind)])
-
-        orig_score = silhouette_score(features, site_labels)
+        features_scaled = StandardScaler().fit_transform(features)
+        
+        orig_score = silhouette_score(features_scaled, site_labels)
+        orig_nh = calculate_neighborhood_hit(features_scaled, site_labels)
+        
         pca_score = silhouette_score(pca_features, site_labels)
         tsne_score = silhouette_score(tsne_features, site_labels)
-        orig_nh = calculate_nh(features, site_labels)
-        pca_nh = calculate_nh(pca_features, site_labels)
-        tsne_nh = calculate_nh(tsne_features, site_labels)
+        pca_nh = calculate_neighborhood_hit(pca_features, site_labels)
+        tsne_nh = calculate_neighborhood_hit(tsne_features, site_labels)
         
-        pca_title = f'PCA: RNA-only samples with reconstructed DNA\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nPCA Silh: {pca_score:.3f} | PCA NH: {pca_nh:.3f}'
-        tsne_title = f't-SNE: RNA-only samples with reconstructed DNA\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nt-SNE Silh: {tsne_score:.3f} | t-SNE NH: {tsne_nh:.3f}'
+        pca_title = f'PCA: RNA-only samples with reconstructed DNA\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nPCA Silh: {pca_score:.3f} | NH: {pca_nh:.3f}'
+        tsne_title = f't-SNE: RNA-only samples with reconstructed DNA\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nt-SNE Silh: {tsne_score:.3f} | NH: {tsne_nh:.3f}'
         
         print(f"\n  Original features - Silhouette: {orig_score:.3f}, NH: {orig_nh:.3f}")
         print(f"  PCA features - Silhouette: {pca_score:.3f}, NH: {pca_nh:.3f}")
         print(f"  t-SNE features - Silhouette: {tsne_score:.3f}, NH: {tsne_nh:.3f}")
-    else:
-        pca_title = f'PCA: RNA-only samples with reconstructed DNA\n(colored by primary site)'
-        tsne_title = f't-SNE: RNA-only samples with reconstructed DNA\n(colored by primary site)'
         
-    # Plot PCA
-    plot_clusters_2d(
-        pca_features,
-        site_labels,
-        pca_title,
-        f'plots/clustering/rna_only_pca_by_site_{run_timestamp}.png',
-        label_encoder=label_encoder
-    )
-    
-    # Plot t-SNE
-    plot_clusters_2d(
-        tsne_features,
-        site_labels,
-        tsne_title,
-        f'plots/clustering/rna_only_tsne_by_site_{run_timestamp}.png',
-        label_encoder=label_encoder,
-        label_mapping=class_short_labels
-    )
+        # Plot PCA
+        plot_clusters_2d(
+            pca_features,
+            site_labels,
+            pca_title,
+            f'plots/clustering/rna_only_pca_by_site_{run_timestamp}.png',
+            label_encoder=label_encoder
+        )
+        
+        # Plot t-SNE
+        plot_clusters_2d(
+            tsne_features,
+            site_labels,
+            tsne_title,
+            f'plots/clustering/rna_only_tsne_by_site_{run_timestamp}.png',
+            label_encoder=label_encoder,
+            label_mapping=class_short_labels
+        )
+    else:
+        print(f"\n⚠ Not enough distinct primary site labels found ({len(np.unique(site_labels))} label(s)). Skipping plots.")
     
     return features, pca_features, tsne_features
 
@@ -364,39 +367,7 @@ def analyze_dna_only_samples(dna_df, run_timestamp):
     )
     
     # Since we don't have primary site for DNA-only, plot without color coding
-    print("\nNote: Primary site information not available for DNA-only samples")
-    
-    # Create simple labels (all same) for plotting
-    simple_labels = np.zeros(len(dna_df), dtype=int)
-    
-    # Plot PCA
-    plt.figure(figsize=(10, 8))
-    plt.scatter(pca_features[:, 0], pca_features[:, 1], 
-                c='steelblue', s=50, alpha=0.6, edgecolors='black', linewidths=0.5)
-    plt.xlabel('PC1', fontsize=12)
-    plt.ylabel('PC2', fontsize=12)
-    plt.title('PCA: DNA-only samples with reconstructed RNA', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    filename = f'plots/clustering/dna_only_pca_{run_timestamp}.png'
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"✓ PCA plot saved to: {filename}")
-    plt.close()
-    
-    # Plot t-SNE
-    plt.figure(figsize=(10, 8))
-    plt.scatter(tsne_features[:, 0], tsne_features[:, 1],
-                c='steelblue', s=50, alpha=0.6, edgecolors='black', linewidths=0.5)
-    plt.xlabel('t-SNE 1', fontsize=12)
-    plt.ylabel('t-SNE 2', fontsize=12)
-    plt.title('t-SNE: DNA-only samples with reconstructed RNA', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    filename = f'plots/clustering/dna_only_tsne_{run_timestamp}.png'
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"✓ t-SNE plot saved to: {filename}")
-    plt.close()
+    print("\nNote: Primary site information not available for DNA-only samples. Skipping plots.")
     
     return features, pca_features, tsne_features
 

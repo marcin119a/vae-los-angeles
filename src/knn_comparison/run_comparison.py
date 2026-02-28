@@ -23,7 +23,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from src.config import Config
 from src.models import DNA2RNAVAE, RNA2DNAVAE
 from src.data import MultiModalDataset
-from src.knn_comparison.conditioned_knn import ConditionedKNeighborsRegressor
+from src.models.conditioned_knn import ConditionedKNeighborsRegressor
 
 # Set plotly template
 pio.templates.default = "plotly_white"

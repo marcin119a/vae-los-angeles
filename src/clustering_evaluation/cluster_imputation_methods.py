@@ -8,6 +8,14 @@ This script performs dimensionality reduction on:
 Visualizes the results with primary site labels where available.
 """
 import os
+import sys
+from pathlib import Path
+
+# Add project root to python path to allow importing from src
+project_root = str(Path(__file__).parent.parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 import pickle
 import numpy as np
 import pandas as pd
@@ -17,14 +25,8 @@ from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.neighbors import KNeighborsRegressor
+from src.models.conditioned_knn import ConditionedKNeighborsRegressor
 from datetime import datetime
-import sys
-from pathlib import Path
-
-# Add project root to python path to allow importing from src
-project_root = str(Path(__file__).parent.parent.parent)
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from src.config import Config
 
@@ -335,6 +337,87 @@ def apply_knn_imputation(train_df, rna_only_df, dna_only_df, n_neighbors=5):
     return rna_only_imputed, dna_only_imputed
 
 
+def apply_conditioned_knn_imputation(train_df, rna_only_df, dna_only_df, label_encoder, n_neighbors=5):
+    """Apply Conditioned KNN imputation to unmatched samples"""
+    print("\n" + "="*80)
+    print(f"APPLYING CONDITIONED KNN IMPUTATION (k={n_neighbors})")
+    print("="*80)
+    
+    # Prepare training data. Conditioned KNN expects the last column to be the primary site index.
+    train_rna = np.array(train_df['tpm_unstranded'].tolist()).astype(np.float32)
+    train_dna = np.array(train_df['beta_value'].tolist()).astype(np.float32)
+    train_sites = train_df['primary_site_encoded'].values[:, np.newaxis]
+    
+    train_rna_cond = np.hstack((train_rna, train_sites))
+    train_dna_cond = np.hstack((train_dna, train_sites))
+    
+    # Apply to RNA-only samples (impute DNA from RNA)
+    rna_only_imputed = None
+    if rna_only_df is not None:
+        if 'primary_site' in rna_only_df.columns:
+            # Filter samples with known primary sites
+            valid_rna = rna_only_df[rna_only_df['primary_site'].isin(label_encoder.classes_)].copy()
+            if len(valid_rna) > 0:
+                print(f"  Imputing DNA for {len(valid_rna)} RNA-only samples with known primary site...")
+                
+                # Get site encoded
+                if 'primary_site_encoded' in valid_rna.columns:
+                    valid_sites = valid_rna['primary_site_encoded'].values
+                else:
+                    valid_sites = label_encoder.transform(valid_rna['primary_site'])
+                
+                rna_val = np.array(valid_rna['tpm_unstranded'].tolist()).astype(np.float32)
+                rna_val_cond = np.hstack((rna_val, valid_sites[:, np.newaxis]))
+                
+                # Fit KNN: DNA = f(RNA, site)
+                knn_dna = ConditionedKNeighborsRegressor(n_neighbors=n_neighbors)
+                knn_dna.fit(train_rna_cond, train_dna)
+                dna_imputed = knn_dna.predict(rna_val_cond)
+                
+                valid_rna['imputed_beta_value'] = list(dna_imputed)
+                rna_only_imputed = valid_rna
+                print(f"✓ Applied Conditioned KNN imputation to {len(valid_rna)} RNA-only samples")
+            else:
+                print("⚠ No RNA-only samples with valid primary_site found. Skipping Conditioned KNN.")
+        else:
+             print("⚠ RNA-only samples don't have primary_site information. Skipping Conditioned KNN.")
+
+    # Apply to DNA-only samples (impute RNA from DNA)
+    dna_only_imputed = None
+    if dna_only_df is not None:
+        if 'primary_site' in dna_only_df.columns:
+            valid_dna = dna_only_df[dna_only_df['primary_site'].isin(label_encoder.classes_)].copy()
+            if len(valid_dna) > 0:
+                print(f"  Imputing RNA for {len(valid_dna)} DNA-only samples with known primary site...")
+                
+                # Get site encoded
+                if 'primary_site_encoded' in valid_dna.columns:
+                    valid_sites = valid_dna['primary_site_encoded'].values
+                else:
+                    valid_sites = label_encoder.transform(valid_dna['primary_site'])
+                
+                dna_val = np.array(valid_dna['beta_value'].tolist()).astype(np.float32)
+                dna_val_cond = np.hstack((dna_val, valid_sites[:, np.newaxis]))
+                
+                # Fit KNN: RNA = f(DNA, site)
+                knn_rna = ConditionedKNeighborsRegressor(n_neighbors=n_neighbors)
+                knn_rna.fit(train_dna_cond, train_rna)
+                rna_imputed = knn_rna.predict(dna_val_cond)
+                
+                # Log-normalize
+                rna_imputed_log = np.log1p(rna_imputed)
+                valid_dna['imputed_tpm_unstranded'] = list(rna_imputed_log)
+                dna_only_imputed = valid_dna
+                print(f"✓ Applied Conditioned KNN imputation to {len(valid_dna)} DNA-only samples")
+            else:
+                 print("⚠ No DNA-only samples with valid primary_site found. Skipping Conditioned KNN.")
+        else:
+             print("⚠ DNA-only samples don't have primary_site information. Skipping Conditioned KNN.")
+    
+    return rna_only_imputed, dna_only_imputed
+
+
+
 def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
     """Analyze samples with imputed data"""
     print("\n" + "="*80)
@@ -398,48 +481,47 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
     if len(np.unique(site_labels)) > 1:
         from sklearn.metrics import silhouette_score
         from sklearn.neighbors import NearestNeighbors
+        from sklearn.preprocessing import StandardScaler
         
-        def calculate_nh(feat, lab, k=5):
-            if len(feat) < k + 1: return 0.0
-            nn = NearestNeighbors(n_neighbors=k+1).fit(feat)
-            ind = nn.kneighbors(feat, return_distance=False)[:, 1:]
-            lab = np.array(lab)
-            return np.mean([np.mean(lab[i] == lab[idx]) for i, idx in enumerate(ind)])
-            
-        orig_score = silhouette_score(features, site_labels)
+        from src.clustering_evaluation.metrics_utils import calculate_neighborhood_hit
+        
+        features_scaled = StandardScaler().fit_transform(features)
+        
+        orig_score = silhouette_score(features_scaled, site_labels)
+        orig_nh = calculate_neighborhood_hit(features_scaled, site_labels)
+        
         pca_score = silhouette_score(pca_features, site_labels)
         tsne_score = silhouette_score(tsne_features, site_labels)
-        orig_nh = calculate_nh(features, site_labels)
-        pca_nh = calculate_nh(pca_features, site_labels)
-        tsne_nh = calculate_nh(tsne_features, site_labels)
         
-        pca_title = f'PCA: {sample_type} samples ({method_name} imputation)\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nPCA Silh: {pca_score:.3f} | PCA NH: {pca_nh:.3f}'
-        tsne_title = f't-SNE: {sample_type} samples ({method_name} imputation)\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nt-SNE Silh: {tsne_score:.3f} | t-SNE NH: {tsne_nh:.3f}'
+        pca_nh = calculate_neighborhood_hit(pca_features, site_labels)
+        tsne_nh = calculate_neighborhood_hit(tsne_features, site_labels)
+        
+        pca_title = f'PCA: {sample_type} samples ({method_name} imputation)\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nPCA Silh: {pca_score:.3f} | NH: {pca_nh:.3f}'
+        tsne_title = f't-SNE: {sample_type} samples ({method_name} imputation)\nOrig Silh: {orig_score:.3f} | Orig NH: {orig_nh:.3f}\nt-SNE Silh: {tsne_score:.3f} | NH: {tsne_nh:.3f}'
         
         print(f"\n  Original features - Silhouette: {orig_score:.3f}, NH: {orig_nh:.3f}")
         print(f"  PCA features - Silhouette: {pca_score:.3f}, NH: {pca_nh:.3f}")
         print(f"  t-SNE features - Silhouette: {tsne_score:.3f}, NH: {tsne_nh:.3f}")
-    else:
-        pca_title = f'PCA: {sample_type} samples ({method_name} imputation)\n(colored by primary site)'
-        tsne_title = f't-SNE: {sample_type} samples ({method_name} imputation)\n(colored by primary site)'
         
-    # Plot PCA
-    plot_clusters_2d(
-        pca_features,
-        site_labels,
-        pca_title,
-        f'plots/clustering/{sample_type.lower().replace("-", "_")}_pca_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
-        label_encoder=label_encoder
-    )
-    
-    # Plot t-SNE
-    plot_clusters_2d(
-        tsne_features,
-        site_labels,
-        tsne_title,
-        f'plots/clustering/{sample_type.lower().replace("-", "_")}_tsne_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
-        label_encoder=label_encoder
-    )
+        # Plot PCA
+        plot_clusters_2d(
+            pca_features,
+            site_labels,
+            pca_title,
+            f'plots/clustering/{sample_type.lower().replace("-", "_")}_pca_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
+            label_encoder=label_encoder
+        )
+        
+        # Plot t-SNE
+        plot_clusters_2d(
+            tsne_features,
+            site_labels,
+            tsne_title,
+            f'plots/clustering/{sample_type.lower().replace("-", "_")}_tsne_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
+            label_encoder=label_encoder
+        )
+    else:
+        print(f"\n⚠ Not enough distinct primary site labels found ({len(np.unique(site_labels))} label(s)). Skipping plots.")
     
     return features, pca_features, tsne_features
 
@@ -470,6 +552,9 @@ def main():
     # Apply KNN imputation
     rna_only_knn, dna_only_knn = apply_knn_imputation(train_df, rna_only_df, dna_only_df, n_neighbors=5)
     
+    # Apply Conditioned KNN imputation
+    rna_only_cond_knn, dna_only_cond_knn = apply_conditioned_knn_imputation(train_df, rna_only_df, dna_only_df, label_encoder, n_neighbors=5)
+    
     # Analyze with Mean imputation
     if rna_only_mean is not None and len(rna_only_mean) > 0:
         analyze_samples(rna_only_mean, label_encoder, run_timestamp, "Mean", "RNA-only")
@@ -493,6 +578,18 @@ def main():
             print("  Skipping visualization for DNA-only samples with KNN imputation")
         else:
             analyze_samples(dna_only_knn, label_encoder, run_timestamp, "KNN", "DNA-only")
+
+    # Analyze with Conditioned KNN imputation
+    if rna_only_cond_knn is not None and len(rna_only_cond_knn) > 0:
+        analyze_samples(rna_only_cond_knn, label_encoder, run_timestamp, "Conditioned KNN", "RNA-only")
+    
+    if dna_only_cond_knn is not None and len(dna_only_cond_knn) > 0:
+        # For DNA-only, we need to check if primary_site is available
+        if 'primary_site' not in dna_only_cond_knn.columns:
+            print("\n⚠ DNA-only samples don't have primary_site information")
+            print("  Skipping visualization for DNA-only samples with Conditioned KNN imputation")
+        else:
+            analyze_samples(dna_only_cond_knn, label_encoder, run_timestamp, "Conditioned KNN", "DNA-only")
     
     print("\n" + "="*80)
     print("Visualization analysis complete!")
