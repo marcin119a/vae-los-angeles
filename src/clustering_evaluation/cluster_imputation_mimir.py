@@ -20,6 +20,20 @@ import pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Set publication-ready seaborn theme
+sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+
+# Global unified color palette mapping for imputation methods
+METHOD_COLORS = {
+    'Mean': '#8da0cb',            # Muted blue
+    'KNN': '#fc8d62',             # Muted orange
+    'Conditioned KNN': '#e78ac3', # Muted pink
+    'VAE': '#a6d854',             # Muted green
+    'MIMIR': '#ffd92f'            # Muted yellow
+}
+
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
@@ -27,6 +41,11 @@ from sklearn.impute import SimpleImputer
 from sklearn.neighbors import KNeighborsRegressor
 from src.models.conditioned_knn import ConditionedKNeighborsRegressor
 from datetime import datetime
+
+import sys
+mimir_path = os.path.join(project_root, 'MIMIR')
+if mimir_path not in sys.path:
+    sys.path.append(mimir_path)
 
 from src.config import Config
 
@@ -433,7 +452,7 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
             print(f"  Filtered out {original_len - len(df)} samples with primary_site not in label_encoder")
         if len(df) == 0:
             print("\n⚠ No samples with valid primary_site found")
-            return
+            return None, None, None, None
     
     # Prepare features
     if sample_type == 'RNA-only':
@@ -453,7 +472,7 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
     
     if features is None:
         print("⚠ Could not prepare features")
-        return
+        return None, None, None, None
     
     print(f"Feature matrix shape: {features.shape}")
     
@@ -468,7 +487,7 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
             print(f"  {site}: {count}")
     else:
         print("\n⚠ No primary site labels found")
-        return
+        return None, None, None, None
     
     # Dimensionality reduction
     pca_features, tsne_features = perform_dimensionality_reduction(
@@ -520,11 +539,59 @@ def analyze_samples(df, label_encoder, run_timestamp, method_name, sample_type):
             f'plots/clustering_mimir/{sample_type.lower().replace("-", "_")}_tsne_{method_name.lower().replace(" ", "_")}_{run_timestamp}.png',
             label_encoder=label_encoder
         )
+        
+        metrics = {
+            'orig_silh': orig_score,
+            'orig_nh': orig_nh,
+            'pca_silh': pca_score,
+            'pca_nh': pca_nh,
+            'tsne_silh': tsne_score,
+            'tsne_nh': tsne_nh
+        }
+        return features, pca_features, tsne_features, metrics
     else:
         print(f"\n⚠ Not enough distinct primary site labels found ({len(np.unique(site_labels))} label(s)). Skipping plots.")
-    
-    return features, pca_features, tsne_features
+        return features, pca_features, tsne_features, None
 
+
+def plot_metrics_summary(metrics_results, run_timestamp):
+    df = pd.DataFrame(metrics_results)
+    
+    for sample_type in df['Sample Type'].unique():
+        sub_df = df[df['Sample Type'] == sample_type]
+        
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Silhouette
+        x = np.arange(len(sub_df))
+        width = 0.25
+        
+        dim_colors = sns.color_palette("Set2", 3)
+        
+        axes[0].bar(x - width, sub_df['orig_silh'], width, label='Original', color=dim_colors[0], edgecolor='none')
+        axes[0].bar(x, sub_df['pca_silh'], width, label='PCA', color=dim_colors[1], edgecolor='none')
+        axes[0].bar(x + width, sub_df['tsne_silh'], width, label='t-SNE', color=dim_colors[2], edgecolor='none')
+        axes[0].set_ylabel('Silhouette Score')
+        axes[0].set_title(f'Silhouette Scores ({sample_type})')
+        axes[0].set_xticks(x)
+        axes[0].set_xticklabels(sub_df['Method'], rotation=45, ha='right')
+        axes[0].legend()
+        
+        # Neighborhood Hits
+        axes[1].bar(x - width, sub_df['orig_nh'], width, label='Original', color=dim_colors[0], edgecolor='none')
+        axes[1].bar(x, sub_df['pca_nh'], width, label='PCA', color=dim_colors[1], edgecolor='none')
+        axes[1].bar(x + width, sub_df['tsne_nh'], width, label='t-SNE', color=dim_colors[2], edgecolor='none')
+        axes[1].set_ylabel('Neighborhood Hit')
+        axes[1].set_title(f'Neighborhood Hits ({sample_type})')
+        axes[1].set_xticks(x)
+        axes[1].set_xticklabels(sub_df['Method'], rotation=45, ha='right')
+        axes[1].legend()
+        
+        plt.tight_layout()
+        filename = f'plots/clustering_mimir/{sample_type.lower().replace("-", "_")}_metrics_summary_{run_timestamp}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"✓ Summary metrics plot saved to: {filename}")
+        plt.close()
 
 def main():
     """Main visualization pipeline"""
@@ -556,7 +623,321 @@ def main():
         dna_only_mimir = pd.read_pickle('data/dna_only_unmatched_mimir.pkl')
         print(f"✓ Loaded {len(dna_only_mimir)} DNA-only samples with MIMIR imputation")
     
+    import glob
+    def find_latest_reconstruction_files():
+        rna_files = glob.glob('data/rna_with_reconstructed_dna_*.pkl')
+        dna_files = glob.glob('data/dna_with_reconstructed_rna_*.pkl')
+        rna_file = max(rna_files, key=os.path.getctime) if rna_files else None
+        dna_file = max(dna_files, key=os.path.getctime) if dna_files else None
+        return rna_file, dna_file
+        
+    rna_vae_file, dna_vae_file = find_latest_reconstruction_files()
+    rna_only_vae = None
+    dna_only_vae = None
+    if rna_vae_file:
+        rna_only_vae = pd.read_pickle(rna_vae_file)
+        # Rename original 'reconstructed_beta_value' to standardized 'imputed_beta_value' to track
+        rna_only_vae = rna_only_vae.rename(columns={'reconstructed_beta_value': 'imputed_beta_value'})
+        print(f"✓ Loaded {len(rna_only_vae)} RNA-only samples with VAE imputation")
+    if dna_vae_file:
+        dna_only_vae = pd.read_pickle(dna_vae_file)
+        dna_only_vae = dna_only_vae.rename(columns={'reconstructed_tpm_unstranded': 'imputed_tpm_unstranded'})
+        print(f"✓ Loaded {len(dna_only_vae)} DNA-only samples with VAE imputation")
+        
     # Apply Mean imputation
+    rna_only_mean, dna_only_mean = apply_mean_imputation(train_df, rna_only_df, dna_only_df)
+    
+    # -------------------------------------------------------------
+    # NEW: Ground truth imputation accuracy evaluation
+    # -------------------------------------------------------------
+    print("\n" + "="*80)
+    print("EVALUATING IMPUTATION ACCURACY VS GROUND TRUTH")
+    print("="*80)
+    
+    from sklearn.model_selection import train_test_split
+    from scipy.stats import pearsonr
+    
+    # We use train_df which has both RNA and DNA for all samples to test accuracy.
+    # Split into a new train and test set to evaluate KNN methods
+    train_subset, test_subset = train_test_split(train_df, test_size=0.1, random_state=42)
+    
+    # Prepare true values
+    true_dna_te = np.array(test_subset['beta_value'].tolist()).astype(np.float32)
+    true_rna_te = np.array(test_subset['tpm_unstranded'].tolist()).astype(np.float32)
+    
+    # We simulate "RNA-only" samples by extracting only RNA from the test subset
+    rna_test_df = test_subset.drop(columns=['beta_value']).copy()
+
+    acc_results = []
+    
+    def evaluate_reconstruction(true_vals, pred_vals, method, target_modality):
+        # Flatten for global correlation/MSE
+        t_flat = true_vals.flatten()
+        p_flat = pred_vals.flatten()
+        
+        mse = np.mean((t_flat - p_flat)**2)
+        pearson, _ = pearsonr(t_flat, p_flat)
+        
+        print(f"  {method} ({target_modality}): MSE = {mse:.4f}, Pearson r = {pearson:.4f}")
+        acc_results.append({
+            'Method': method,
+            'Target': target_modality,
+            'MSE': mse,
+            'Pearson r': pearson
+        })
+
+    # 1. Evaluate Mean
+    trn_dna_mean = np.mean(np.array(train_subset['beta_value'].tolist()).astype(np.float32), axis=0)
+    mean_preds = np.tile(trn_dna_mean, (len(test_subset), 1))
+    evaluate_reconstruction(true_dna_te, mean_preds, 'Mean', 'DNA')
+    
+    # 2. Evaluate KNN
+    trn_rna = np.array(train_subset['tpm_unstranded'].tolist()).astype(np.float32)
+    trn_dna = np.array(train_subset['beta_value'].tolist()).astype(np.float32)
+    knn = KNeighborsRegressor(n_neighbors=5, n_jobs=-1)
+    knn.fit(trn_rna, trn_dna)
+    knn_preds = knn.predict(np.array(test_subset['tpm_unstranded'].tolist()).astype(np.float32))
+    evaluate_reconstruction(true_dna_te, knn_preds, 'KNN', 'DNA')
+    
+    # 3. Evaluate Conditioned KNN
+    trn_sites = train_subset['primary_site_encoded'].values[:, np.newaxis]
+    tst_sites = test_subset['primary_site_encoded'].values[:, np.newaxis]
+    
+    cond_knn = ConditionedKNeighborsRegressor(n_neighbors=5)
+    cond_knn.fit(np.hstack((trn_rna, trn_sites)), trn_dna)
+    cond_knn_preds = cond_knn.predict(np.hstack((np.array(test_subset['tpm_unstranded'].tolist()).astype(np.float32), tst_sites)))
+    evaluate_reconstruction(true_dna_te, cond_knn_preds, 'Conditioned KNN', 'DNA')
+    
+    # Eval VAE (Assuming we can query the trained VAE on the test subset)
+    print("\n  Computing VAE reconstruction accuracy on the test subset via subprocess...")
+    test_subset.to_pickle('data/temp_test_subset.pkl')
+    eval_vae_script = """
+import sys
+import os
+import pandas as pd
+import numpy as np
+import torch
+import json
+import glob
+from scipy.stats import pearsonr
+
+# We need to load their VAE model
+sys.path.append(os.path.abspath('.'))
+from src.models import RNA2DNAVAE
+from src.config import Config
+import pickle
+
+test_subset = pd.read_pickle('data/temp_test_subset.pkl')
+true_dna_te = np.array(test_subset['beta_value'].tolist()).astype(np.float32)
+true_rna_te = np.array(test_subset['tpm_unstranded'].tolist()).astype(np.float32)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+Config.DEVICE = device
+
+with open('data/label_encoder.pkl', 'rb') as f:
+    label_encoder = pickle.load(f)
+
+if 'primary_site_encoded' in test_subset.columns:
+    site_labels = test_subset['primary_site_encoded'].values
+else:
+    site_labels = label_encoder.transform(test_subset['primary_site'])
+
+model = RNA2DNAVAE(
+    Config.INPUT_DIM_A, 
+    Config.INPUT_DIM_B, 
+    len(label_encoder.classes_), 
+    Config.LATENT_DIM
+).to(device)
+
+def get_run_id():
+    if os.path.exists('latest_rna2dna_run_id.txt'):
+        with open('latest_rna2dna_run_id.txt', 'r') as f:
+            return f.read().strip()
+    return None
+
+run_id = get_run_id()
+model_path = os.path.join(Config.CHECKPOINT_DIR, f"best_rna2dna_{run_id}.pt") if run_id else None
+
+if model_path and os.path.exists(model_path):
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.eval()
+
+    rna_t = torch.tensor(true_rna_te, dtype=torch.float32).to(device)
+    site_t = torch.tensor(site_labels).long().to(device)
+    
+    with torch.no_grad():
+        pred_dna, _, _ = model(rna=rna_t, site=site_t)
+        pred_dna = pred_dna.cpu().numpy()
+
+    t_flat = true_dna_te.flatten()
+    p_flat = pred_dna.flatten()
+    mse = float(np.mean((t_flat - p_flat)**2))
+    pearson = float(pearsonr(t_flat, p_flat)[0])
+
+    with open('data/temp_vae_acc.json', 'w') as f:
+        json.dump({'MSE': mse, 'Pearson r': pearson}, f)
+else:
+    with open('data/temp_vae_acc.json', 'w') as f:
+        json.dump({'error': f'No best model {model_path} found'}, f)
+"""
+    with open('temp_vae_eval.py', 'w') as f:
+        f.write(eval_vae_script)
+        
+    import subprocess
+    import json
+    try:
+        subprocess.run(['venv/bin/python', 'temp_vae_eval.py'], check=True, capture_output=True)
+        if os.path.exists('data/temp_vae_acc.json'):
+            with open('data/temp_vae_acc.json', 'r') as f:
+                vae_results = json.load(f)
+            if 'error' not in vae_results:
+                print(f"  VAE (DNA): MSE = {vae_results['MSE']:.4f}, Pearson r = {vae_results['Pearson r']:.4f}")
+                acc_results.append({
+                    'Method': 'VAE',
+                    'Target': 'DNA',
+                    'MSE': vae_results['MSE'],
+                    'Pearson r': vae_results['Pearson r']
+                })
+            else:
+                print(f"  Failed to evaluate VAE accuracy: {vae_results['error']}")
+    except Exception as e:
+        print(f"  Failed to evaluate VAE accuracy via subprocess: {e}")
+    finally:
+        if os.path.exists('data/temp_test_subset.pkl'): os.remove('data/temp_test_subset.pkl')
+        if os.path.exists('temp_vae_eval.py'): os.remove('temp_vae_eval.py')
+        if os.path.exists('data/temp_vae_acc.json'): os.remove('data/temp_vae_acc.json')
+
+    # 5. Evaluate MIMIR (MIMIR was trained on ALL train_df, but we can evaluate on the test_subset for an upper bound info/reference)
+    # Since MIMIR relies on complex relative imports natively inside its own directory,
+    # we'll write the test_subset to a temp file and execute a subprocess.
+    print("\n  Computing MIMIR reconstruction accuracy on the test subset via subprocess...")
+    import subprocess
+    import json
+    
+    # Pre-calculate dimensions to avoid module import collisions inside the subprocess
+    # Pre-calculate dimensions to avoid module import collisions inside the subprocess
+    rna_dim = Config.INPUT_DIM_A
+    dna_dim = Config.INPUT_DIM_B
+
+    test_subset.to_pickle('data/temp_test_subset.pkl')
+    eval_script = f"""
+import sys
+import os
+
+import pandas as pd
+import numpy as np
+import torch
+import json
+from scipy.stats import pearsonr
+
+# Now we need MIMIR's src.mae_masked, so temporarily restore standard path resolution 
+# by prioritizing the local MIMIR directory path
+sys.path.insert(0, os.path.abspath('.'))
+from src.mae_masked import MultiModalWithSharedSpace, load_modality_with_config, extract_encoder_decoder_from_pretrained
+
+test_subset = pd.read_pickle('../data/temp_test_subset.pkl')
+true_dna_te = np.array(test_subset['beta_value'].tolist()).astype(np.float32)
+true_rna_te = np.array(test_subset['tpm_unstranded'].tolist()).astype(np.float32)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+
+encoders, decoders, hidden_dims = {{}}, {{}}, {{}}
+
+# Load pre-trained AEs
+rna_ae, rna_hidden, _ = load_modality_with_config('mimir_checkpoints/rna_ae.pt', map_location=device)
+dna_ae, dna_hidden, _ = load_modality_with_config('mimir_checkpoints/dna_ae.pt', map_location=device)
+
+encoders['rna'], decoders['rna'] = extract_encoder_decoder_from_pretrained(rna_ae.to(device))
+hidden_dims['rna'] = rna_hidden
+
+encoders['dna'], decoders['dna'] = extract_encoder_decoder_from_pretrained(dna_ae.to(device))
+hidden_dims['dna'] = dna_hidden
+
+shared_model = MultiModalWithSharedSpace(
+    encoders=encoders,
+    decoders=decoders,
+    hidden_dims=hidden_dims,
+    shared_dim=128, proj_depth=1
+).to(device)
+
+shared_model.load_state_dict(torch.load('mimir_checkpoints/finetuned/shared_model_ep100.pt', map_location=device, weights_only=True))
+shared_model.eval()
+
+rna_val_t = torch.tensor(true_rna_te, dtype=torch.float32).to(device)
+res = []
+bs = 256
+with torch.no_grad():
+    for i in range(0, rna_val_t.size(0), bs):
+        batch = rna_val_t[i:i+bs]
+        encoded = shared_model.encoders['rna'](batch)
+        shared = shared_model.projections['rna'](encoded)
+        from_shared = shared_model.rev_projections['dna'](shared)
+        imputed_dna = shared_model.decoders['dna'](from_shared)
+        res.append(imputed_dna.cpu().numpy())
+mimir_preds = np.concatenate(res, axis=0)
+
+t_flat = true_dna_te.flatten()
+p_flat = mimir_preds.flatten()
+mse = float(np.mean((t_flat - p_flat)**2))
+pearson = float(pearsonr(t_flat, p_flat)[0])
+
+with open('../data/temp_mimir_acc.json', 'w') as f:
+    json.dump({{'MSE': mse, 'Pearson r': pearson}}, f)
+"""
+    with open('MIMIR/temp_eval.py', 'w') as f:
+        f.write(eval_script)
+        
+    try:
+        subprocess.run(['../venv/bin/python', 'temp_eval.py'], cwd='MIMIR', check=True, capture_output=True)
+        with open('data/temp_mimir_acc.json', 'r') as f:
+            mimir_results = json.load(f)
+        
+        print(f"  MIMIR (DNA): MSE = {mimir_results['MSE']:.4f}, Pearson r = {mimir_results['Pearson r']:.4f}")
+        acc_results.append({
+            'Method': 'MIMIR',
+            'Target': 'DNA',
+            'MSE': mimir_results['MSE'],
+            'Pearson r': mimir_results['Pearson r']
+        })
+    except Exception as e:
+        print(f"  Failed to evaluate MIMIR accuracy via subprocess: {e}")
+        if hasattr(e, 'stderr') and e.stderr:
+            print(f"  MIMIR STDERR: {e.stderr.decode()}")
+    finally:
+        if os.path.exists('data/temp_test_subset.pkl'): os.remove('data/temp_test_subset.pkl')
+        if os.path.exists('MIMIR/temp_eval.py'): os.remove('MIMIR/temp_eval.py')
+        if os.path.exists('data/temp_mimir_acc.json'): os.remove('data/temp_mimir_acc.json')
+
+    # Plot Accuracy Metrics
+    if len(acc_results) > 0:
+        acc_df = pd.DataFrame(acc_results)
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        
+        methods = acc_df['Method']
+        x = np.arange(len(methods))
+        bar_colors = [METHOD_COLORS.get(m, '#cccccc') for m in methods]
+        
+        axes[0].bar(x, acc_df['MSE'], color=bar_colors, edgecolor='black', linewidth=0.5)
+        axes[0].set_ylabel('Mean Squared Error (Lower is better)')
+        axes[0].set_title('Reconstruction MSE (RNA -> DNA)')
+        axes[0].set_xticks(x)
+        axes[0].set_xticklabels(methods, rotation=45, ha='right')
+        
+        axes[1].bar(x, acc_df['Pearson r'], color=bar_colors, edgecolor='black', linewidth=0.5)
+        axes[1].set_ylabel('Pearson Correlation r (Higher is better)')
+        axes[1].set_title('Reconstruction Correlation (RNA -> DNA)')
+        axes[1].set_xticks(x)
+        axes[1].set_xticklabels(methods, rotation=45, ha='right')
+        
+        plt.tight_layout()
+        acc_filename = f'plots/clustering_mimir/reconstruction_accuracy_{run_timestamp}.png'
+        plt.savefig(acc_filename, dpi=300, bbox_inches='tight')
+        print(f"✓ Accuracy metrics plot saved to: {acc_filename}")
+        plt.close()
+
+    print("="*80)
+    print("CONTINUING WITH CLUSTERING EVALUATION ON UNMATCHED SAMPLES")
+    print("="*80 + "\n")
     rna_only_mean, dna_only_mean = apply_mean_imputation(train_df, rna_only_df, dna_only_df)
     
     # Apply KNN imputation
@@ -565,53 +946,32 @@ def main():
     # Apply Conditioned KNN imputation
     rna_only_cond_knn, dna_only_cond_knn = apply_conditioned_knn_imputation(train_df, rna_only_df, dna_only_df, label_encoder, n_neighbors=5)
     
-    # Analyze with Mean imputation
-    if rna_only_mean is not None and len(rna_only_mean) > 0:
-        analyze_samples(rna_only_mean, label_encoder, run_timestamp, "Mean", "RNA-only")
-    
-    if dna_only_mean is not None and len(dna_only_mean) > 0:
-        # For DNA-only, we need to check if primary_site is available
-        if 'primary_site' not in dna_only_mean.columns:
-            print("\n⚠ DNA-only samples don't have primary_site information")
-            print("  Skipping visualization for DNA-only samples with Mean imputation")
-        else:
-            analyze_samples(dna_only_mean, label_encoder, run_timestamp, "Mean", "DNA-only")
-    
-    # Analyze with KNN imputation
-    if rna_only_knn is not None and len(rna_only_knn) > 0:
-        analyze_samples(rna_only_knn, label_encoder, run_timestamp, "KNN", "RNA-only")
-    
-    if dna_only_knn is not None and len(dna_only_knn) > 0:
-        # For DNA-only, we need to check if primary_site is available
-        if 'primary_site' not in dna_only_knn.columns:
-            print("\n⚠ DNA-only samples don't have primary_site information")
-            print("  Skipping visualization for DNA-only samples with KNN imputation")
-        else:
-            analyze_samples(dna_only_knn, label_encoder, run_timestamp, "KNN", "DNA-only")
+    metrics_results = []
+    def run_and_store(df, method, sample_type):
+        if df is not None and len(df) > 0:
+            if sample_type == 'DNA-only' and 'primary_site' not in df.columns:
+                print(f"\n⚠ {sample_type} samples don't have primary_site information")
+                print(f"  Skipping visualization for {sample_type} samples with {method} imputation")
+                return
+            outs = analyze_samples(df, label_encoder, run_timestamp, method, sample_type)
+            if len(outs) == 4 and outs[3] is not None:
+                m = outs[3]
+                metrics_results.append({'Method': method, 'Sample Type': sample_type, **m})
 
-    # Analyze with Conditioned KNN imputation
-    if rna_only_cond_knn is not None and len(rna_only_cond_knn) > 0:
-        analyze_samples(rna_only_cond_knn, label_encoder, run_timestamp, "Conditioned KNN", "RNA-only")
-    
-    if dna_only_cond_knn is not None and len(dna_only_cond_knn) > 0:
-        # For DNA-only, we need to check if primary_site is available
-        if 'primary_site' not in dna_only_cond_knn.columns:
-            print("\n⚠ DNA-only samples don't have primary_site information")
-            print("  Skipping visualization for DNA-only samples with Conditioned KNN imputation")
-        else:
-            analyze_samples(dna_only_cond_knn, label_encoder, run_timestamp, "Conditioned KNN", "DNA-only")
-            
-    # Analyze with MIMIR imputation
-    if rna_only_mimir is not None and len(rna_only_mimir) > 0:
-        analyze_samples(rna_only_mimir, label_encoder, run_timestamp, "MIMIR", "RNA-only")
-    
-    if dna_only_mimir is not None and len(dna_only_mimir) > 0:
-        # For DNA-only, we need to check if primary_site is available
-        if 'primary_site' not in dna_only_mimir.columns:
-            print("\n⚠ DNA-only samples don't have primary_site information")
-            print("  Skipping visualization for DNA-only samples with MIMIR imputation")
-        else:
-            analyze_samples(dna_only_mimir, label_encoder, run_timestamp, "MIMIR", "DNA-only")
+    run_and_store(rna_only_mean, "Mean", "RNA-only")
+    run_and_store(dna_only_mean, "Mean", "DNA-only")
+    run_and_store(rna_only_knn, "KNN", "RNA-only")
+    run_and_store(dna_only_knn, "KNN", "DNA-only")
+    run_and_store(rna_only_cond_knn, "Conditioned KNN", "RNA-only")
+    run_and_store(dna_only_cond_knn, "Conditioned KNN", "DNA-only")
+    run_and_store(rna_only_vae, "VAE", "RNA-only")
+    run_and_store(dna_only_vae, "VAE", "DNA-only")
+    run_and_store(rna_only_mimir, "MIMIR", "RNA-only")
+    run_and_store(dna_only_mimir, "MIMIR", "DNA-only")
+
+    # Plot results summary
+    if len(metrics_results) > 0:
+        plot_metrics_summary(metrics_results, run_timestamp)
     
     print("\n" + "="*80)
     print("Visualization analysis complete!")
