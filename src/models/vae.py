@@ -44,7 +44,7 @@ class MultiModalVAE(nn.Module):
             site: Primary site labels (optional)
             
         Returns:
-            Tuple of (out_a, out_b, out_c, mu, logvar)
+            Tuple of (out_a, out_b, out_c, mu, logvar, mu_list, logvar_list)
         """
         mu_list, logvar_list = [], []
 
@@ -63,7 +63,7 @@ class MultiModalVAE(nn.Module):
 
         # Aggregate latent representations
         if len(mu_list) == 0:
-            return None, None, None, None, None
+            return None, None, None, None, None, None, None
         elif len(mu_list) == 1:
             mu, logvar = mu_list[0], logvar_list[0]
         else:
@@ -76,5 +76,5 @@ class MultiModalVAE(nn.Module):
         out_b = self.decoder_b(z)
         out_c = self.decoder_c(z)
 
-        return out_a, out_b, out_c, mu, logvar
+        return out_a, out_b, out_c, mu, logvar, mu_list, logvar_list
 

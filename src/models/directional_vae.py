@@ -31,7 +31,7 @@ class RNA2DNAVAE(nn.Module):
             site: Primary site labels
             
         Returns:
-            Tuple of (reconstructed_dna, mu, logvar)
+            Tuple of (reconstructed_dna, mu, logvar, mu_list, logvar_list)
         """
         mu_list = []
         logvar_list = []
@@ -47,7 +47,7 @@ class RNA2DNAVAE(nn.Module):
 
         # Aggregate latent representations
         if len(mu_list) == 0:
-            return None, None, None
+            return None, None, None, None, None
         elif len(mu_list) == 1:
             mu, logvar = mu_list[0], logvar_list[0]
         else:
@@ -57,7 +57,7 @@ class RNA2DNAVAE(nn.Module):
         z = reparameterize(mu, logvar)
         recon_dna = self.decoder_dna(z)
 
-        return recon_dna, mu, logvar
+        return recon_dna, mu, logvar, mu_list, logvar_list
 
 
 class DNA2RNAVAE(nn.Module):
@@ -82,7 +82,7 @@ class DNA2RNAVAE(nn.Module):
             site: Primary site labels
             
         Returns:
-            Tuple of (reconstructed_rna, mu, logvar)
+            Tuple of (reconstructed_rna, mu, logvar, mu_list, logvar_list)
         """
         mu_list = []
         logvar_list = []
@@ -98,7 +98,7 @@ class DNA2RNAVAE(nn.Module):
 
         # Aggregate latent representations
         if len(mu_list) == 0:
-            return None, None, None
+            return None, None, None, None, None
         elif len(mu_list) == 1:
             mu, logvar = mu_list[0], logvar_list[0]
         else:
@@ -108,5 +108,5 @@ class DNA2RNAVAE(nn.Module):
         z = reparameterize(mu, logvar)
         recon_rna = self.decoder_rna(z)
 
-        return recon_rna, mu, logvar
+        return recon_rna, mu, logvar, mu_list, logvar_list
 

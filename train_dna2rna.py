@@ -6,6 +6,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import torch
+import json
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
@@ -70,24 +71,31 @@ def prepare_dataloaders(merged_df):
 
 
 def train_epoch(model, dataloader, optimizer, epoch):
-    """Train for one epoch"""
+    """Train for one epoch with Hybrid Contrastive Loss"""
     model.train()
     running_train_loss = 0.0
     recon_component = 0.0
     kl_component = 0.0
+    cont_component = 0.0
+    triplet_component = 0.0
     
     # Beta warmup: gradually increase KL weight
     beta = min(1.0, epoch / Config.BETA_WARMUP_EPOCHS) * Config.BETA_START
+    
+    # Weights for hybrid loss components (can be moved to Config)
+    alpha = float(os.getenv("ALPHA", 0.1))
+    delta = float(os.getenv("DELTA", 0.1))
     
     for tpm, beta_data, site in dataloader:
         tpm, beta_data, site = tpm.to(Config.DEVICE), beta_data.to(Config.DEVICE), site.to(Config.DEVICE)
         
         # Forward pass: predict RNA from DNA + site
-        recon_rna, mu, logvar = model(dna=beta_data, site=site)
+        recon_rna, mu, logvar, mu_list, logvar_list = model(dna=beta_data, site=site)
         
-        # Compute loss
-        loss, recon_loss, kld_loss = dna2rna_loss(
-            recon_rna, tpm, mu, logvar, beta=beta
+        # Compute hybrid loss
+        loss, recon_loss, kld_loss, cont_loss, triplet_loss = dna2rna_loss(
+            recon_rna, tpm, mu, logvar, mu_list=mu_list, labels=site, 
+            beta=beta, alpha=alpha, delta=delta
         )
         
         # Backward pass
@@ -99,6 +107,8 @@ def train_epoch(model, dataloader, optimizer, epoch):
         running_train_loss += loss.item()
         recon_component += recon_loss
         kl_component += kld_loss
+        cont_component += cont_loss
+        triplet_component += triplet_loss
     
     avg_train_loss = running_train_loss / len(dataloader)
     
@@ -111,17 +121,20 @@ def validate(model, dataloader, epoch):
     running_val_loss = 0.0
     
     beta = min(1.0, epoch / Config.BETA_WARMUP_EPOCHS) * Config.BETA_START
+    alpha = float(os.getenv("ALPHA", 0.1))
+    delta = float(os.getenv("DELTA", 0.1))
     
     with torch.no_grad():
         for tpm, beta_data, site in dataloader:
             tpm, beta_data, site = tpm.to(Config.DEVICE), beta_data.to(Config.DEVICE), site.to(Config.DEVICE)
             
             # Forward pass
-            recon_rna, mu, logvar = model(dna=beta_data, site=site)
+            recon_rna, mu, logvar, mu_list, logvar_list = model(dna=beta_data, site=site)
             
             # Compute loss
-            loss, _, _ = dna2rna_loss(
-                recon_rna, tpm, mu, logvar, beta=beta
+            loss, _, _, _, _ = dna2rna_loss(
+                recon_rna, tpm, mu, logvar, mu_list=mu_list, labels=site,
+                beta=beta, alpha=alpha, delta=delta
             )
             
             running_val_loss += loss.item()
@@ -131,12 +144,23 @@ def validate(model, dataloader, epoch):
     return avg_val_loss
 
 
-def plot_losses(train_losses, val_losses, run_id):
-    """Plot training and validation losses"""
+def plot_losses(train_losses, val_losses, run_id, model_type="modified"):
+    """Plot and save loss history"""
+    history = {
+        'train_losses': [float(x) for x in train_losses],
+        'val_losses': [float(x) for x in val_losses],
+        'model_type': model_type
+    }
+    
+    history_file = f'plots/loss_history_dna2rna_{run_id}.json'
+    with open(history_file, 'w') as f:
+        json.dump(history, f)
+    print(f"Loss history saved to {history_file}")
+
     plt.figure(figsize=(10, 6))
-    plt.plot(train_losses, label="Train Loss")
-    plt.plot(val_losses, label="Validation Loss")
-    plt.title("Training & Validation Loss for DNA2RNAVAE")
+    plt.plot(train_losses, label=f"Train Loss ({model_type})")
+    plt.plot(val_losses, label=f"Validation Loss ({model_type})")
+    plt.title(f"Training & Validation Loss for DNA2RNAVAE ({model_type})")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend()
@@ -172,6 +196,8 @@ def main():
     Config.INPUT_DIM_A = int(os.getenv("INPUT_DIM_A", Config.INPUT_DIM_A))
     Config.INPUT_DIM_B = int(os.getenv("INPUT_DIM_B", Config.INPUT_DIM_B))
     Config.LATENT_DIM = int(os.getenv("LATENT_DIM", Config.LATENT_DIM))
+    num_epochs = int(os.getenv("NUM_EPOCHS", Config.NUM_EPOCHS))
+    patience = int(os.getenv("PATIENCE", Config.PATIENCE))
 
     print(f"\nInitializing DNA2RNAVAE model on {Config.DEVICE}...")
     model = DNA2RNAVAE(
@@ -195,15 +221,15 @@ def main():
     )
     
     # Training loop
-    print(f"\nStarting training for {Config.NUM_EPOCHS} epochs...")
-    print(f"Early stopping patience: {Config.PATIENCE}")
+    print(f"\nStarting training for {num_epochs} epochs...")
+    print(f"Early stopping patience: {patience}")
     
     best_val_loss = np.inf
     trigger = 0
     train_losses = []
     val_losses = []
     
-    for epoch in range(Config.NUM_EPOCHS):
+    for epoch in range(num_epochs):
         # Train
         avg_train_loss, beta = train_epoch(model, train_dataloader, optimizer, epoch)
         train_losses.append(avg_train_loss)
@@ -216,7 +242,7 @@ def main():
         scheduler.step(avg_val_loss)
         
         # Print progress
-        print(f"Epoch [{epoch+1}/{Config.NUM_EPOCHS}] | "
+        print(f"Epoch [{epoch+1}/{num_epochs}] | "
               f"Train Loss: {avg_train_loss:.2f} | "
               f"Val Loss: {avg_val_loss:.2f} | "
               f"β={beta:.5f}")
@@ -232,13 +258,14 @@ def main():
             print(f"✓ Best model saved (val_loss: {avg_val_loss:.2f})")
         else:
             trigger += 1
-            if trigger >= Config.PATIENCE:
+            if trigger >= patience:
                 print(f"\nEarly stopping triggered at epoch {epoch+1}!")
                 break
     
     # Plot losses
     print("\nGenerating loss plots...")
-    plot_losses(train_losses, val_losses, run_id)
+    model_type = os.getenv("MODEL_TYPE", "modified")
+    plot_losses(train_losses, val_losses, run_id, model_type=model_type)
     
     # Save final model path for evaluation
     with open('latest_dna2rna_run_id.txt', 'w') as f:
@@ -254,4 +281,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
